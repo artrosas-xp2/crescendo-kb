@@ -1,0 +1,276 @@
+---
+sidebar_position: 3
+title: Provisioning gaps
+description: Rollout-level workflow issues that surface as recurring help desk tickets
+---
+
+# Provisioning gaps
+
+The runbooks in this KB describe how to diagnose and resolve individual
+incidents. This page is different — it documents **rollout-level
+workflow gaps** that quietly create a steady stream of incidents.
+
+Each entry here is a systemic issue: it's not the user's fault, it's
+not the help desk's fault, and it can't be fixed at the user-incident
+level. It can only be fixed by changing the provisioning workflow.
+
+If you're running a hardware key rollout and want to reduce the volume
+of "I'm locked out" calls, these are the levers to pull.
+
+---
+
+## Gap 1 — PUKs not set during provisioning
+
+### What we see in the field
+
+Token comes in for a real or perceived lockout. Step 3 of the
+[lockout diagnosis runbook](../runbooks/lockout-diagnosis) reads the
+access control applet properties and reports:
+
+```json
+"PUKInitialized": false
+```
+
+The token has no PUK. If the smart card PIN counter ever does hit
+zero, there is no recovery path other than a full destructive
+reprovision — wiping PIV certificates, OATH slots, external auth
+keys, and forcing the user to re-enroll everywhere.
+
+### Why this happens
+
+The vendor's provisioning workflow doesn't set a PUK by default.
+Setting one requires an additional CLI call (`puk-put`) and a
+deliberate decision about what value to use and where to record it.
+It's easy to skip during initial setup, and the consequence isn't
+visible until a user has a problem months later.
+
+### Why it matters
+
+Without a PUK:
+
+- Every smart card PIN lockout requires destructive reprovision
+- Users lose their PIV cert, which means a CA re-enrollment cycle
+- Users lose their OATH slots, which means a PSKC re-import
+- Users lose any FIDO credentials, which means re-registration with
+  every relying party
+- The single help desk call balloons into a multi-day operational
+  workflow involving the user, the CA team, the IdP team, and every
+  application owner whose relying party relationships need to be
+  rebuilt
+
+A PUK reset is a 30-second non-destructive operation. A full
+reprovision can take hours of clock time and days of elapsed time.
+The cost of skipping the PUK during provisioning is enormous and
+delayed.
+
+### How to close the gap
+
+Add a `puk-put` step to the standard provisioning script:
+
+```powershell
+.\cli puk-put --puk <16_digit_puk> -p <pin>
+```
+
+Record the PUK against the token's CUID in a recoverable store
+(password manager entry, encrypted KeePass file, vault entry — not in
+a spreadsheet, not in email).
+
+**PUK value strategy options:**
+
+1. **Unique per token** — generate a random 16-digit PUK for each
+   token and store it. Highest security, requires a robust storage
+   workflow.
+2. **Algorithmically derived from CUID** — use an HMAC of the CUID
+   with a master secret to derive each PUK. Lets you recompute any
+   PUK on demand without storing them, but the master secret becomes
+   critical.
+3. **Same PUK across the batch** — operationally simplest, lowest
+   security. Acceptable if PUKs are protected as administrative
+   credentials and rotated when staff turns over.
+
+The right choice depends on your threat model and operational
+maturity. The wrong choice is "no PUK at all."
+
+---
+
+## Gap 2 — Factory default PIN never rotated
+
+### What we see in the field
+
+User reports being unable to authenticate. Step 4 of the lockout
+diagnosis runbook tests the user's claimed PIN and fails. Step 5
+tests the factory default — commonly `000000` for enterprise
+rollouts — and succeeds.
+
+The user never knew their PIN. They were issued a key with a default
+PIN already set and never walked through changing it.
+
+### Why this happens
+
+The provisioning workflow sets a default PIN to make initial
+deployment fast, with the implicit assumption that users will change
+it at first use. In practice:
+
+- There's no enforcement that the user must change the PIN
+- The initial-use experience may not prompt for a PIN change
+- Users who don't immediately need their key may not interact with
+  it for weeks or months, by which time they've forgotten that there
+  was a step they were supposed to take
+- Some users assume "the key just works" and never realize a PIN is
+  involved at all until they hit a system that prompts for one
+
+### Why it matters
+
+Two problems compound:
+
+1. **Operational** — every user who hasn't rotated their PIN appears
+   identical to a locked-out user from the help desk's perspective.
+   The user says "my key doesn't work," tries some PINs they think
+   it might be, fails, and calls support. Every one of these calls
+   is preventable.
+
+2. **Security** — a default PIN is functionally equivalent to no PIN.
+   If the threat model anywhere in the deployment assumes the smart
+   card PIN provides confidentiality or non-repudiation, that
+   assumption is wrong for any user who hasn't rotated.
+
+### How to close the gap
+
+Two complementary controls:
+
+1. **Force PIN change at first use.** Either via the provisioning
+   workflow itself (set `ForcePinChange: true` in the PIN
+   properties), or via the relying party (e.g. an IdP policy that
+   detects the default PIN value and prompts for rotation before
+   allowing access).
+
+2. **Document and communicate the default clearly during rollout.**
+   Whatever default you're using, the user should know it on day one,
+   should know they're expected to change it, and should know how to
+   change it. A one-page "your new key — first steps" handout
+   eliminates a meaningful percentage of these calls.
+
+The `ForcePinChange` approach is preferable because it doesn't rely
+on user diligence. Documentation alone is necessary but insufficient.
+
+---
+
+## Gap 3 — Counter starting state not coordinated between token and server
+
+### What we see in the field
+
+A freshly provisioned HOTP credential rejects the first code the user
+generates. The token's counter and the validation server's counter
+weren't aligned at provisioning, so the first code falls outside the
+server's look-ahead window.
+
+See [HOTP counter drift](../runbooks/hotp-counter-drift) for the full
+treatment of this issue at the incident level. The provisioning-side
+fix:
+
+### How to close the gap
+
+- Use a single source of truth — typically the PSKC file — for both
+  the token-side counter and the server-side counter
+- Import the PSKC file into the validation server **before** the user
+  receives the token, so the server's counter is already aligned
+- If reseeding a counter for any reason (e.g. during testing), reset
+  both sides explicitly rather than relying on either side to "catch
+  up"
+
+---
+
+## Gap 4 — FIDO PIN policy not defined for the rollout
+
+### What we see in the field
+
+A user with a hardware key that supports FIDO2 attempts to register a
+passkey. The FIDO applet has no PIN set (`clientPin: false`). The
+relying party's WebAuthn flow prompts for a FIDO PIN creation as part
+of the registration — but the user doesn't know what value to choose,
+doesn't know it's separate from their smart card PIN, and may pick
+something they immediately forget.
+
+The result: a freshly registered passkey backed by a FIDO PIN the
+user can't recall. The next time they try to use it, lockout follows
+quickly because **the FIDO PIN counter has no PUK by spec** — recovery
+means `fido-token-reset` and re-registration.
+
+### Why this happens
+
+FIDO PIN is genuinely independent from the smart card PIN. There's no
+way for the relying party to tell the user this clearly during a
+WebAuthn ceremony. Most rollouts focus on the smart card and OATH
+sides of the key and don't include FIDO PIN guidance in user training.
+
+### How to close the gap
+
+- **Decide whether FIDO is in scope.** If your rollout doesn't
+  actually use FIDO2 (and many enterprise smart card rollouts don't),
+  document that and tell users not to enroll the key as a passkey
+  authenticator with personal accounts. The FIDO applet remains
+  unprovisioned and irrelevant.
+- **If FIDO is in scope, decide and document the PIN policy.** Same
+  PIN as smart card? Different policy? User's choice? Whatever it is,
+  users need to know **before** the first WebAuthn registration
+  ceremony, not during it.
+- **Provide a recovery expectation.** Users should know that FIDO
+  PIN has no recovery path other than reset-and-re-register, so
+  they should pick a PIN they will actually remember.
+
+---
+
+## Gap 5 — No CUID-keyed record store for the rollout
+
+### What we see in the field
+
+A user calls in. We capture the CUID (`token-cuid`). We need to know:
+the user's identity, when the key was provisioned, what PIN/PUK
+defaults were used, which OATH credentials are on it, and whether
+this CUID is on the active inventory.
+
+If there's no central record store keyed to CUID, every one of these
+questions becomes an investigation. The help desk agent ends up
+searching spreadsheets, asking the IdP team, asking the provisioning
+team, and reconstructing the token's history from scratch on each
+call.
+
+### How to close the gap
+
+A single record store, keyed by CUID, containing at minimum:
+
+- User identity (name, employee ID, email)
+- Provisioning date and provisioning operator
+- Initial PIN value (or method used)
+- PUK value (or PUK derivation method)
+- OATH credential IDs / PSKC reference
+- Any FIDO PIN policy applied
+- Status (active / suspended / decommissioned)
+
+This can be a database, a vault, an inventory management system, or a
+structured wiki page — what matters is that it's keyed to CUID, it's
+maintained automatically by the provisioning workflow, and it's
+accessible to the help desk during incidents.
+
+Without it, every incident is more expensive than it needs to be.
+With it, most incidents resolve in a single call.
+
+---
+
+## Summary
+
+If you're scoping rollout improvements, the priority order is roughly:
+
+1. **Set PUKs and record them** (highest leverage — converts
+   destructive incidents to non-destructive)
+2. **CUID-keyed record store** (force multiplier on every other
+   improvement)
+3. **Force PIN change at first use** (eliminates a whole category of
+   "lockout" calls that aren't really lockouts)
+4. **PSKC-driven counter alignment** (eliminates day-one HOTP
+   rejections)
+5. **Document FIDO scope and PIN policy** (eliminates a slow trickle
+   of unrecoverable lockouts later)
+
+Each of these is a one-time provisioning workflow change that pays
+dividends across every future incident.

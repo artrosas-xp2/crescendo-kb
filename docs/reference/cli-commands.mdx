@@ -1,0 +1,177 @@
+---
+sidebar_position: 1
+title: CLI command reference
+description: Vendor CLI commands organized by what you can actually do
+---
+
+# CLI command reference
+
+Vendor CLI tools tend to list commands alphabetically, which is fine when
+you know exactly what you're looking for and useless when you don't.
+This reference organizes commands by **what you can accomplish with them**,
+grouped by the applet they affect.
+
+The examples below use a generic `cli` binary name. Substitute your
+vendor's actual executable.
+
+## Common options
+
+These flags are supported on most commands:
+
+| Option | Short | Description |
+|---|---|---|
+| `--pin <pin>` | `-p` | PIN for authentication |
+| `--xauth-key <key>` | `-x` | External auth key for authentication |
+| `--token <id>` | `-t` | Token identifier (index or reader name) |
+| `--verbose` | `-v` | Enable verbose (debug) logging |
+| `--log-level <level>` | | DEBUG / INFO / WARN / ERROR / SILENT |
+| `--log-sensitive` | | Log sensitive data (use with extreme caution) |
+| `--help` | `-h` | Display command-specific help |
+
+For PINs and keys, `env` reads the value from an environment variable, and
+on Windows `INTERACTIVE` opens a secure dialog.
+
+## Token / device info
+
+| Command | Purpose | Destructive? |
+|---|---|---|
+| `token-info` | List all connected tokens with reader names, ATR strings | No |
+| `token-cuid` | Get the unique hardware ID of a specific token | No |
+
+## Token lifecycle
+
+| Command | Purpose | Destructive? |
+|---|---|---|
+| `token-reset` | Reset the token to factory defaults | ⚠ Wipes everything |
+| `token-new` | One-shot reprovision: reset, set PIN, default PIN properties, generate PIV personal data | ⚠ Wipes everything |
+
+## PIN management (smart card / ACA)
+
+| Command | Purpose | Destructive? |
+|---|---|---|
+| `pin-verify` | Test a PIN; reveals retries remaining on failure | Burns 1 retry on wrong PIN |
+| `pin-change` | Change PIN (requires the current PIN) | No |
+| `pin-reset-tries` | Reset PIN try counter using PUK; also sets a new PIN | Burns 1 PUK retry on wrong PUK |
+| `pin-props-update` | Update PIN min/max length, counters, etc. | No |
+| `puk-put` | Install a PUK on the token | No (additive) |
+| `logout` | Log out of the current ACA session | No |
+
+## External authentication
+
+| Command | Purpose | Destructive? |
+|---|---|---|
+| `xauth-key-put` | Store an external auth key on the token | No |
+| `xauth-key-delete` | Delete the external auth key | Yes (key only) |
+| `xauth` | Perform external authentication (static or dynamic mode) | No |
+| `xauth-mode-change` | Switch between static and dynamic challenge modes | No |
+| `xauth-get-challenge` | Retrieve a dynamic challenge from the token | No |
+
+## OATH / OTP configuration
+
+| Command | Purpose | Destructive? |
+|---|---|---|
+| `otp-props-get` | List configured OATH slots and properties | No |
+| `otp-slot-configure` | Configure an OATH slot with key and config; updates the PSKC file | No |
+| `otp-slot-delete` | Delete an OATH slot and remove from PSKC file | Yes (slot only) |
+| `otp-pass-configure` | Configure a static password slot | No |
+| `otp-generate` | Generate an OTP from a configured slot | No |
+
+## OCRA (challenge/response)
+
+| Command | Purpose | Destructive? |
+|---|---|---|
+| `ocra-slot-configure` | Configure an OCRA slot for challenge-response | No |
+| `ocra-authenticate` | Perform a challenge-response or digital signature operation | No |
+
+## PIV — properties and discovery
+
+| Command | Purpose | Destructive? |
+|---|---|---|
+| `piv-props-get` | List all PIV objects and properties in JSON | No |
+| `piv-personal-info-get` | Return PIV personal information | No |
+
+## PIV — keys and certificates
+
+| Command | Purpose | Destructive? |
+|---|---|---|
+| `piv-key-pair-gen` | Generate an asymmetric key pair on the token | Overwrites slot |
+| `piv-pki-put` | Upload a private key, certificate, or both | Overwrites slot |
+| `piv-key-delete` | Delete a key object by Key Reference | Yes |
+| `piv-cert-get` | Retrieve a certificate from a container | No |
+| `piv-cert-delete` | Remove a certificate (preserves derived public key) | Yes (cert only) |
+
+## PIV — generic container data
+
+| Command | Purpose | Destructive? |
+|---|---|---|
+| `piv-data-put` | Store data under a tag in a container | Modifies container |
+| `piv-data-get` | Read data from a container by BER-TLV tag | No |
+| `piv-data-delete` | Delete data under a tag (or wipe the container) | Yes |
+
+## PIV — cryptographic operations
+
+| Command | Purpose | Destructive? |
+|---|---|---|
+| `piv-data-sign` | Sign data with a private key (CLI handles hashing) | No |
+| `piv-data-raw-crypto` | Raw crypto operation (no padding — you handle it) | No |
+
+## PIV — access control
+
+| Command | Purpose | Destructive? |
+|---|---|---|
+| `piv-pki-acr` | Change the access rule of an empty PKI slot | Slot must be empty |
+| `piv-data-acr` | Change the access rule of an empty container | Container must be empty |
+
+## SKI (secure key import)
+
+| Command | Purpose | Destructive? |
+|---|---|---|
+| `ski-key-get` | Generate or read the RSA-3072 transport key | No |
+| `ski-data-encrypt` | Encrypt key and data with a session KEK for secure import | No |
+
+## FIDO
+
+:::caution FIDO commands require elevation
+
+Run your terminal as Administrator. FIDO operations use USB HID, not
+the CCID smart card interface, and need elevated privileges to access.
+
+:::
+
+| Command | Purpose | Destructive? |
+|---|---|---|
+| `fido-props-get` | List FIDO authenticator info, retries, AAGUID | No |
+| `fido-pin-set` | Set the initial FIDO PIN | No (first-time only) |
+| `fido-pin-change` | Change the FIDO PIN (requires the current PIN) | No |
+| `fido-cred-list` | List discoverable FIDO credentials | No |
+| `fido-cred-delete` | Delete a specific FIDO credential | Yes (one cred) |
+| `fido-token-reset` | Wipe all FIDO credentials and the FIDO PIN | ⚠ Wipes FIDO only |
+
+## Exit codes
+
+For scripting and automation:
+
+| Code | Status |
+|---|---|
+| `0` | Success |
+| `-1` | General failure |
+| `-2` | Exception |
+| `-3` | Invalid parameters |
+| `-4` | No tokens found |
+
+## Output separation
+
+The CLI separates streams cleanly:
+
+- **STDOUT** — actual command output (the cert, the OTP, the JSON)
+- **STDERR** — diagnostic logs and error messages
+
+This lets you redirect cleanly:
+
+```bash
+# Save just the cert to a file, logs to a trace file
+.\cli piv-cert-get --ber-tlv-tag 5FC105 -v > cert.pem 2> trace.txt
+```
+
+If you're seeing log output in PowerShell when piping to a variable,
+that's STDERR — redirect it explicitly.

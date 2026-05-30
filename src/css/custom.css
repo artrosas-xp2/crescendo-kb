@@ -1,0 +1,276 @@
+/**
+ * Stripe/Linear-inspired clean technical docs theme
+ * Lots of whitespace, restrained color use, system font stack
+ */
+
+/* Color tokens — restrained palette */
+:root {
+  --ifm-color-primary: #5e6ad2;          /* Linear-ish indigo */
+  --ifm-color-primary-dark: #3d4ab8;
+  --ifm-color-primary-darker: #2f3aa3;
+  --ifm-color-primary-darkest: #232b87;
+  --ifm-color-primary-light: #7782db;
+  --ifm-color-primary-lighter: #919ae5;
+  --ifm-color-primary-lightest: #b7bff0;
+
+  --ifm-code-font-size: 90%;
+  --docusaurus-highlighted-code-line-bg: rgba(94, 106, 210, 0.08);
+
+  /* Typography — system font stack like Stripe */
+  --ifm-font-family-base: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, sans-serif;
+  --ifm-font-family-monospace: "SF Mono", "Monaco", "Inconsolata",
+    "Fira Mono", "Droid Sans Mono", "Source Code Pro", monospace;
+
+  --ifm-font-size-base: 16px;
+  --ifm-line-height-base: 1.65;
+  --ifm-heading-line-height: 1.3;
+  --ifm-h1-font-size: 2.25rem;
+  --ifm-h2-font-size: 1.625rem;
+  --ifm-h3-font-size: 1.25rem;
+
+  /* Whitespace */
+  --ifm-spacing-horizontal: 1.5rem;
+  --ifm-paragraph-margin-bottom: 1.25rem;
+
+  /* Surfaces */
+  --ifm-background-color: #ffffff;
+  --ifm-background-surface-color: #fafafa;
+  --ifm-color-content: #1a1a1a;
+  --ifm-color-content-secondary: #6b6b6b;
+  --ifm-toc-border-color: #efefef;
+  --ifm-table-border-color: #ececec;
+  --ifm-table-stripe-background: #fafafa;
+  --ifm-hr-border-color: #efefef;
+}
+
+[data-theme='dark'] {
+  --ifm-color-primary: #8d96e8;
+  --ifm-color-primary-dark: #6d77df;
+  --ifm-color-primary-darker: #5d68d9;
+  --ifm-color-primary-darkest: #3b48c8;
+  --ifm-color-primary-light: #adb5ef;
+  --ifm-color-primary-lighter: #bdc3f1;
+  --ifm-color-primary-lightest: #dde0f8;
+
+  --ifm-background-color: #0e0e10;
+  --ifm-background-surface-color: #161618;
+  --ifm-color-content: #ededed;
+  --ifm-color-content-secondary: #a1a1a1;
+  --ifm-toc-border-color: #27272a;
+  --ifm-table-border-color: #27272a;
+  --ifm-table-stripe-background: #141416;
+  --ifm-hr-border-color: #27272a;
+
+  --docusaurus-highlighted-code-line-bg: rgba(141, 150, 232, 0.1);
+}
+
+/* Tighten headings */
+.markdown h1,
+.markdown h2,
+.markdown h3 {
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.markdown h1 {
+  margin-top: 1rem;
+  margin-bottom: 1.5rem;
+}
+
+.markdown h2 {
+  margin-top: 2.5rem;
+  margin-bottom: 1rem;
+  padding-bottom: 0.25rem;
+}
+
+.markdown h3 {
+  margin-top: 2rem;
+  margin-bottom: 0.75rem;
+}
+
+/* Code blocks — slightly more breathing room */
+.theme-code-block {
+  margin-bottom: 1.5rem;
+  border-radius: 8px;
+}
+
+/* Inline code */
+code {
+  background: var(--ifm-background-surface-color);
+  border: 1px solid var(--ifm-toc-border-color);
+  border-radius: 4px;
+  padding: 0.1rem 0.35rem;
+  font-size: 0.9em;
+}
+
+/* Tables */
+.markdown table {
+  display: table;
+  width: 100%;
+  border-collapse: collapse;
+  margin-bottom: 1.5rem;
+  font-size: 0.95rem;
+}
+
+.markdown table thead tr {
+  border-bottom: 2px solid var(--ifm-table-border-color);
+}
+
+.markdown table th,
+.markdown table td {
+  padding: 0.75rem 1rem;
+  border: none;
+  border-bottom: 1px solid var(--ifm-table-border-color);
+  text-align: left;
+}
+
+.markdown table tr:nth-child(2n) {
+  background: transparent;
+}
+
+/* Admonitions — flatter, less colorful */
+.theme-admonition {
+  border-radius: 8px;
+  border-left-width: 3px;
+  margin-bottom: 1.5rem;
+}
+
+/* Navbar — subtle */
+.navbar {
+  border-bottom: 1px solid var(--ifm-toc-border-color);
+  box-shadow: none;
+}
+
+.navbar__title {
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+/* Sidebar tweaks */
+.menu__link {
+  font-size: 0.9rem;
+  padding: 0.4rem 0.75rem;
+  border-radius: 6px;
+}
+
+.menu__link--active {
+  font-weight: 500;
+}
+
+.menu__list-item-collapsible {
+  border-radius: 6px;
+}
+
+/* Footer */
+.footer--light {
+  background: var(--ifm-background-surface-color);
+  border-top: 1px solid var(--ifm-toc-border-color);
+}
+
+/* Hero on the intro page */
+.intro-hero {
+  padding: 3rem 0 1rem;
+  border-bottom: 1px solid var(--ifm-toc-border-color);
+  margin-bottom: 2.5rem;
+}
+
+.intro-hero h1 {
+  font-size: 2.75rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  margin-bottom: 0.5rem;
+}
+
+.intro-hero p.lead {
+  font-size: 1.15rem;
+  color: var(--ifm-color-content-secondary);
+  margin-bottom: 0;
+  max-width: 36rem;
+}
+
+/* Cards on the intro page */
+.card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 1rem;
+  margin: 2rem 0;
+}
+
+.card {
+  border: 1px solid var(--ifm-toc-border-color);
+  border-radius: 10px;
+  padding: 1.25rem 1.25rem 1rem;
+  background: var(--ifm-background-color);
+  transition: border-color 0.15s ease, transform 0.15s ease;
+  text-decoration: none;
+  color: inherit;
+  display: block;
+}
+
+.card:hover {
+  border-color: var(--ifm-color-primary);
+  text-decoration: none;
+  color: inherit;
+  transform: translateY(-1px);
+}
+
+.card h3 {
+  margin: 0 0 0.4rem;
+  font-size: 1.05rem;
+  font-weight: 600;
+}
+
+.card p {
+  margin: 0;
+  font-size: 0.9rem;
+  color: var(--ifm-color-content-secondary);
+  line-height: 1.5;
+}
+
+/* Step blocks for runbooks */
+.step-block {
+  border-left: 3px solid var(--ifm-color-primary);
+  padding-left: 1.25rem;
+  margin: 1.5rem 0 2rem;
+}
+
+.step-block h3 {
+  margin-top: 0;
+}
+
+/* Decision badge */
+.decision-badge {
+  display: inline-block;
+  background: var(--ifm-background-surface-color);
+  border: 1px solid var(--ifm-toc-border-color);
+  border-radius: 4px;
+  padding: 0.1rem 0.5rem;
+  font-size: 0.8rem;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-right: 0.5rem;
+}
+
+.decision-badge.success {
+  background: rgba(34, 197, 94, 0.08);
+  border-color: rgba(34, 197, 94, 0.3);
+  color: #16a34a;
+}
+
+.decision-badge.warning {
+  background: rgba(234, 179, 8, 0.08);
+  border-color: rgba(234, 179, 8, 0.3);
+  color: #ca8a04;
+}
+
+.decision-badge.danger {
+  background: rgba(239, 68, 68, 0.08);
+  border-color: rgba(239, 68, 68, 0.3);
+  color: #dc2626;
+}
+
+[data-theme='dark'] .decision-badge.success { color: #4ade80; }
+[data-theme='dark'] .decision-badge.warning { color: #facc15; }
+[data-theme='dark'] .decision-badge.danger { color: #f87171; }

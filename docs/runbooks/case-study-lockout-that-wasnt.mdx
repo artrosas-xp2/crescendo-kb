@@ -1,0 +1,416 @@
+---
+sidebar_position: 2
+title: Case study — the "lockout" that wasn't
+description: A walkthrough of a real diagnostic session showing how to triage a reported hardware key lockout when the symptom doesn't match the cause
+---
+
+# Case study — the "lockout" that wasn't
+
+A walkthrough of a real diagnostic session. The user reported being
+"locked out" of their hardware security key. Following the runbook end
+to end turned up something more interesting than a lockout: the key
+itself was fully healthy, but the user didn't know their PIN, and
+several gaps in the provisioning workflow surfaced along the way.
+
+This is the kind of case where the value of a structured runbook shows
+up clearly — without one, the natural response to "I'm locked out"
+would have been a destructive reprovision. With one, the diagnosis took
+ten minutes and the user kept all their credentials.
+
+---
+
+## The user's complaint
+
+> "I'm locked out of my hardware key. It worked before, now it doesn't.
+> I've tried my PIN a few times and nothing works."
+
+This is the most common opening for a hardware key support call. The
+word "locked out" is doing a lot of work here — it could mean any of:
+
+- The smart card PIN counter has hit zero
+- The FIDO PIN counter has hit zero
+- An OATH/HOTP code isn't being accepted by the validation server
+- A certificate has expired
+- The user is typing the wrong PIN against a healthy counter
+- The user's relying party (IdP, VPN, etc.) is rejecting them for a
+  reason unrelated to the key itself
+
+The first job of the diagnostic flow is to narrow which of these is
+actually happening — before doing anything that burns a retry.
+
+---
+
+## The diagnostic sequence
+
+Every command below is read-only or single-attempt by design. The
+sequence is ordered so that earlier commands can never make a later
+problem worse.
+
+### Step 1 — Confirm the token is detected
+
+```powershell
+.\cli token-info
+```
+
+**What this retrieves:**
+- Whether any tokens are connected at all
+- Reader name (driver-level identification)
+- Token name and ATR
+- The `-t` index for targeting this specific token
+
+**What we found:** One token, healthy, index 0, reader name
+`HID Global Crescendo Key V3 0`. ATR matched a standard V3 key. No
+ambiguity, no driver issues.
+
+**Why this step matters:** If the token isn't visible to the OS, no
+further command will work. This step also catches the common case where
+a user has multiple readers or accidentally inserted a different key.
+
+---
+
+### Step 2 — Capture the token's unique ID
+
+```powershell
+.\cli token-cuid
+```
+
+**What this retrieves:**
+- The card unique identifier (CUID), a 20-character hex string that
+  uniquely identifies this physical key
+
+**What we found:** A clean CUID, captured for the support ticket and
+for the password manager entry we'd potentially create later.
+
+**Why this step matters:** Provisioning records, PUK manifests, and
+post-incident audit trails are all keyed off the CUID. Capturing it
+before doing anything destructive is non-negotiable.
+
+---
+
+### Step 3 — Read the access control applet properties
+
+```powershell
+.\cli aca-props-get
+```
+
+**What this retrieves:** A JSON dump describing the access control
+applet's state, including:
+
+- `CurrentPinTryCounter` vs `MaxPinTryCounter` — how many PIN attempts
+  remain
+- `CurrentPinUnlockCounter` vs `MaxPinUnlockCounter` — unlock counter
+  state
+- `PUKInitialized` — whether a PUK exists on this token
+- `XAUTHKeysInitializedStatus` and `XAUTHChallengeType` — external auth
+  state
+- `MinPinLength` / `MaxPinLength` — what PIN lengths are valid
+- `PINSharedWithFIDO` — whether the smart card PIN and FIDO PIN are
+  linked or independent
+
+**What we found:**
+
+| Property | Value | Reading |
+|---|---|---|
+| `CurrentPinTryCounter` | 6 of 6 | **PIN is not locked at all** |
+| `PUKInitialized` | `false` | No PUK on this token |
+| `XAUTHKeysInitializedStatus` | `true` | External auth key configured |
+| `XAUTHChallengeType` | `Dynamic` | Challenge-response mode |
+| `PINSharedWithFIDO` | `false` | Smart card and FIDO PINs are independent |
+
+**This is the pivotal moment in the diagnosis.** The PIN counter was at
+full strength. The user *believed* they were locked out, but the token
+itself reported no failed attempts. Whatever they were experiencing
+wasn't a hardware-level PIN lockout.
+
+The `PUKInitialized: false` flagged a separate concern: even if we did
+later need to recover from a real lockout, the non-destructive PUK path
+wasn't available on this key. That's a provisioning workflow gap, not a
+user issue — but worth noting for the rollout owner.
+
+---
+
+### Step 4 — Test the PIN the user claimed
+
+```powershell
+.\cli pin-verify -p <user_claimed_pin> -v
+```
+
+**What this retrieves:**
+- A response code indicating whether the PIN is correct (`9000`) or
+  wrong (`63Cx` where `x` is retries remaining)
+- Implicitly burns a retry on failure — used carefully
+
+**What we found:** The user-claimed PIN returned `63C5` — wrong PIN,
+5 retries remaining. The user didn't know their actual PIN. Notably,
+the value they offered was derived from the visible CUID tail — a hint
+that they were guessing based on something printed on the key, not
+recalling a PIN they had set.
+
+**Why we stopped after one attempt:** With `PUKInitialized: false`,
+running through all 6 retries would have landed us at zero with no
+recovery path other than a full destructive reprovision. The runbook
+rule — *never guess a PIN past one attempt* — directly prevents this.
+
+---
+
+### Step 5 — Try the documented default
+
+The user couldn't recall their PIN, so we exhausted the non-destructive
+record-based options first. Enterprise rollouts commonly seed keys with
+a uniform default PIN that users change on first use.
+
+```powershell
+.\cli pin-verify -p 000000 -v
+```
+
+**What we found:** `9000` — success. The PIN was the unchanged
+enterprise default. The user had never set their own PIN, so when
+something prompted them for one, they didn't know what to enter.
+
+**An important observed behavior:** a *successful* `pin-verify` resets
+the failed-attempt counter back to maximum. Our previous wrong attempt
+had taken the counter from 6 to 5; after this success, it was back at
+6. This is worth knowing — the counter value alone isn't a reliable
+record of historical wrong attempts; it only reflects consecutive
+failures since the last success.
+
+---
+
+### Step 6 — Enumerate the OATH (OTP) configuration
+
+The user mentioned a "single-tap action" — a behavior where the key
+emits a code or password when touched. We needed to confirm what was
+actually provisioned.
+
+```powershell
+.\cli otp-props-get
+```
+
+**What this retrieves:** A JSON dump of every OATH slot configured on
+the key, including:
+
+- Slot identifier and friendly name
+- Algorithm (HOTP / TOTP)
+- Hash algorithm, digit count, time step or counter value
+- `ContactUsageACR` and `ContactlessUsageACR` — what access control
+  rules govern each slot's use
+
+**What we found:** Three credentials across two slot families.
+
+| Friendly name | Type | Tap requires PIN? | Counter |
+|---|---|---|---|
+| OATH HOTP | HOTP (event-based) | **No** — `Always` rule | Very high, ~4.16 billion |
+| OATH TOTP 1 | TOTP (time-based) | Yes — `Pin` rule | Time-derived |
+| OATH TOTP 2 | TOTP (time-based) | Yes — `Pin` rule | Time-derived |
+
+The "single-tap action" the user described was the **HOTP slot**.
+Its access rule allows generation on contact without PIN entry — the
+classic enterprise "tap to emit OTP" workflow.
+
+**The very high HOTP counter is worth flagging.** A counter approaching
+4.16 billion isn't a tap count (no one taps four billion times); it's
+either a provisioning-seeded value or a representation difference
+between the token and the validation server. If the user's HOTP codes
+are being rejected, **counter desync between token and server is the
+most likely cause** — not a lockout at all.
+
+---
+
+### Step 7 — Check the FIDO applet (elevated)
+
+The user might have a passkey on this key that they're using somewhere,
+or there might be no FIDO usage at all. FIDO commands run over USB HID
+rather than the smart card CCID interface, and require elevated
+privileges.
+
+The first attempt failed cleanly because PowerShell wasn't elevated:
+
+```
+ERROR: Authenticator get info failed: NotElevated
+```
+
+After restarting PowerShell as Administrator and switching back to the
+correct directory:
+
+```powershell
+.\cli fido-props-get -v
+```
+
+**What this retrieves:**
+- FIDO applet version and supported standards
+- The authenticator attestation certificate (factory-installed identity
+  proving the key is genuine)
+- AAGUID
+- Enterprise attestation configuration
+- `authenticatorGetInfo` CTAP response, which crucially includes
+  `clientPin` — whether a PIN is set — and FIDO PIN retry budget
+
+**What we found:**
+
+```json
+"Options": {
+  "clientPin": false,
+  "rk": true,
+  "credMgmt": true,
+  "ep": true
+},
+"RemainingDiscoverableCredentials": 30
+```
+
+`clientPin: false` is the authoritative answer: **no FIDO PIN is set
+on this key.** `RemainingDiscoverableCredentials: 30` confirms zero
+credentials have been registered — all 30 slots are empty.
+
+---
+
+### Step 8 — Confirm by attempting to list credentials
+
+```powershell
+.\cli fido-cred-list -p 000000 -v
+```
+
+**What this retrieves on a normal token:** The list of discoverable
+FIDO2 credentials with their relying party IDs, user handles, and
+credential IDs.
+
+**What we got:**
+
+```
+CTAP2_ERR_PIN_NOT_SET - No PIN has been set.
+```
+
+CTAP error code `0x35` is the spec-defined "no PIN configured"
+response. This was the second independent confirmation of the same
+finding from `fido-props-get`.
+
+**Critically — no FIDO retry was burned.** The token rejected the
+operation at the "there is no PIN to verify" stage, before evaluating
+the candidate PIN. This is a useful diagnostic property: you can
+probe whether a FIDO PIN exists without spending a retry.
+
+---
+
+## What we learned about this token
+
+| Applet | State | Diagnostic finding |
+|---|---|---|
+| ACA / smart card PIN | `000000` (factory default), 6/6 retries | Healthy, but unchanged from provisioning |
+| PUK | Not initialized | No non-destructive recovery path |
+| PIV | Enterprise config | Cert state not enumerated this session |
+| OATH HOTP | Provisioned, tap-without-PIN, counter ≈ 4.16B | Functional; counter worth comparing to server |
+| OATH TOTP × 2 | Provisioned, PIN-required | Functional |
+| FIDO2 | No PIN, zero credentials | Capable but unused |
+| External auth | Initialized, dynamic mode | Configured but not exercised this session |
+
+---
+
+## What we learned about the user's actual problem
+
+There was no lockout. The smart card PIN counter was at full strength
+throughout. The user's actual situation was:
+
+1. **They never knew their PIN.** They were given the key with the
+   factory default `000000` and were never walked through changing it
+   to something memorable. When something prompted for a PIN, they
+   started guessing — including a value derived from the visible CUID
+   on the key itself.
+
+2. **They confused "the system rejects me" with "the key is locked."**
+   Their relying party (whatever they were trying to authenticate to)
+   was correctly rejecting their wrong PIN attempts. From the user's
+   perspective, this looked like the key being broken.
+
+3. **The "tap action" might have a separate problem.** The HOTP
+   counter value on the token suggests possible drift with the
+   validation server, which would cause OTP rejections that *also*
+   look like "my key is broken" from the user's side. That's a
+   server-side investigation, not a token reset.
+
+---
+
+## What we learned about the provisioning workflow
+
+Two findings worth fixing at the rollout level, not the user level:
+
+1. **No PUK was set on this token.** Same as the previous key we
+   examined in a separate session. If this is a pattern across the
+   rollout, every locked-out user will require a destructive
+   reprovision instead of a 30-second PUK reset. Adding `puk-put` to
+   the standard provisioning script — and recording the PUK keyed to
+   the CUID — would eliminate this entire class of escalation.
+
+2. **The factory default PIN was never rotated.** Users are receiving
+   keys with `000000` already set and no clear "change this on first
+   use" workflow. Either the provisioning script should set a unique
+   per-user PIN (and communicate it via a secure channel), or the
+   first-login experience needs a forced PIN change.
+
+Neither of these makes the token unsafe in isolation, but together
+they create a population of keys that are operationally fragile and
+indistinguishable from locked-out keys at first glance.
+
+---
+
+## Command sequence at a glance
+
+| # | Command | Purpose | Destructive? |
+|---|---|---|---|
+| 1 | `token-info` | Confirm a token is detected and capture reader info | No |
+| 2 | `token-cuid` | Capture the unique ID for tickets and records | No |
+| 3 | `aca-props-get` | Read PIN counter, PUK state, external auth state | No |
+| 4 | `pin-verify -p <claimed>` | Test the user's claimed PIN — once | Burns 1 retry on failure |
+| 5 | `pin-verify -p 000000` | Test the factory default PIN | Resets counter on success |
+| 6 | `otp-props-get` | Enumerate OATH slots and access rules | No |
+| 7 | `fido-props-get` (elevated) | Check whether a FIDO PIN exists and retry budget | No |
+| 8 | `fido-cred-list -p <guess>` (elevated) | Enumerate FIDO credentials — confirms FIDO PIN state | No retry burned if no PIN set |
+
+The whole flow took roughly ten minutes and ended without touching a
+single destructive command. The user kept their PIV cert, their OATH
+slots, their HOTP counter, and their external auth key. The fix was a
+conversation — *"here's your PIN, here's how to change it"* — not a
+reprovision.
+
+---
+
+## Two CTAP error codes worth memorizing
+
+While we're here:
+
+- **`CTAP2_ERR_PIN_NOT_SET` (`0x35`)** — not a problem, an answer.
+  When `fido-cred-list` returns this, the FIDO applet has no PIN
+  configured and therefore no credentials can exist. No retries are
+  burned.
+
+- **`CTAP2_ERR_PIN_AUTH_BLOCKED` (`0x34`)** — the FIDO PIN counter
+  has been exhausted. Recovery is `fido-token-reset`, which wipes
+  all FIDO credentials. There is no FIDO PUK by spec.
+
+These two codes alone resolve most "is the FIDO applet locked"
+questions without needing to enumerate further.
+
+---
+
+## Reflections for the runbook
+
+A few things this session surfaced that I'd add to the main runbook:
+
+1. **A pre-step zero: "what was the user actually trying to do?"**
+   This single question separates a smart card PIN issue from a FIDO
+   issue from an OATH validation issue. The token-side diagnostics
+   are the same either way, but the conclusion shifts dramatically.
+
+2. **The counter-resets-on-success behavior.** Worth calling out
+   explicitly in the `pin-verify` section. A user who has been
+   guessing wrong PINs intermittently with the right one occasionally
+   will not show a low counter — the counter only reflects
+   consecutive failures.
+
+3. **`clientPin: false` as the fastest "is FIDO in use" signal.**
+   Faster than `fido-cred-list` and doesn't require an elevation
+   round-trip to fail informatively.
+
+4. **The "tap action" can mean two things.** Worth a short reference
+   page distinguishing OATH HOTP single-tap (server validates a
+   counter) from FIDO2 user-presence touch (the relying party
+   validates a signature). They look identical to the user and
+   require completely different troubleshooting.

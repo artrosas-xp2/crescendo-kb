@@ -1,0 +1,488 @@
+---
+sidebar_position: 1
+title: Lockout diagnosis
+description: Diagnosing a locked-out hardware security key when you don't yet know which applet is the problem
+---
+
+# Lockout diagnosis runbook
+
+When a user calls in saying "my key is locked out," the first job isn't
+to fix it — it's to figure out **which applet is actually locked**.
+A modern dual-interface security key carries at least three independent
+PIN-protected applets (PIV, ACA, FIDO2), each with its own retry counter,
+its own recovery story, and its own destructive escalation path.
+
+This runbook walks the diagnosis in the order that minimizes risk:
+**read-only commands first, verify attempts second, destructive recovery
+last.**
+
+:::tip Two ground rules
+
+1. **Never guess a PIN.** Every wrong attempt burns a retry. The CLI tool
+   itself doesn't lock you out, but the *token* does. Use read-only
+   commands first (Steps 1–3) before any verify attempts.
+2. **Record everything you set.** If you reprovision a PIN or PUK in this
+   session, save it to your password manager keyed to the token's
+   unique ID before the user walks away. Most lockouts are caused by
+   missing PUK records from the original provisioning.
+
+:::
+
+## How to use this
+
+Each step is a single CLI call followed by what to look for and what to do
+next. Branches are explicit — when a step has two possible outcomes,
+both paths are written out. **Stop at the first step that resolves the
+lockout** and document what worked.
+
+The CLI examples below use a generic `cli` binary name. Substitute your
+vendor's actual executable.
+
+---
+
+<div className="step-block">
+
+### Step 0 — Ask what the user was actually doing
+
+Before touching the key, ask:
+
+> "When you saw the failure, what were you trying to log into, and what
+> exactly did you see on screen?"
+
+The same hardware key can serve four very different authentication paths
+— smart card PIV, OATH OTP, FIDO2 passkey, external auth challenge —
+and "locked out" looks identical from the user's side regardless of
+which one failed. The token-side diagnostics are similar either way,
+but **the conclusion shifts dramatically** based on what they were
+trying to do.
+
+| What the user was trying | Most likely applet | Where to focus |
+|---|---|---|
+| Smart card / Windows login | ACA + PIV | Steps 3–4 |
+| Passkey login (Microsoft, GitHub, etc.) | FIDO2 | Steps 7–9 |
+| VPN with hardware OTP | OATH | Step 5 |
+| VPN with cert-based auth | PIV / external auth | Steps 4, 10 |
+| "Tap action" or "single touch" code | OATH HOTP **or** FIDO2 — needs clarification | See [HOTP vs FIDO2 tap](#a-note-on-the-tap-action) below |
+
+A few specific user phrases that help you triage faster:
+
+- "It asked for my PIN and rejected it" → smart card or FIDO PIN
+- "It didn't ask for anything, just said the code was wrong" → OATH
+- "It asked me to touch the key and nothing happened" → FIDO user presence
+  or OATH tap-without-PIN
+
+If the user can't describe what they saw, don't speculate. Continue
+through Steps 1–3 (all read-only) and the token's state will narrow it
+down for you.
+
+</div>
+
+<div className="step-block">
+
+### Step 1 — Confirm the token is detected
+
+```powershell
+.\cli token-info
+```
+
+**What to expect:** A list of connected readers and their tokens, including
+the ATR string, reader name, and token name.
+
+**Decide:**
+
+- <span className="decision-badge success">Token listed</span> Continue to Step 2.
+- <span className="decision-badge danger">No tokens listed</span> Stop. This is a hardware or driver issue, not a lockout. Check USB connection, try a different port, verify reader drivers are installed.
+- <span className="decision-badge warning">Multiple tokens listed</span> Use `-t <index>` or `-t "<reader name>"` on every subsequent command to target the right one.
+
+</div>
+
+<div className="step-block">
+
+### Step 2 — Capture the unique ID for the ticket
+
+```powershell
+.\cli token-cuid
+```
+
+**What to expect:** A 20-character hex string identifying this specific
+token.
+
+**Action:** Paste it into the support ticket. Use it as the key for any
+password manager entry you create during this session.
+
+</div>
+
+<div className="step-block">
+
+### Step 3 — Read the access control applet properties
+
+```powershell
+.\cli aca-props-get
+```
+
+This is the most important diagnostic step. It is **read-only** — it
+cannot lock the user out further — and tells you everything you need
+to know before deciding what to try next.
+
+**Note three things from the output:**
+
+1. **PIN tries remaining** — if 0, the smart card PIN is locked
+2. **PUK presence** — if no PUK is defined, the non-destructive recovery
+   path isn't available later
+3. **External auth state** — note whether external authentication keys
+   are configured and in what mode
+
+**Decide:**
+
+- <span className="decision-badge danger">PIN tries = 0</span> Smart card PIN is locked. Jump to Step 6 (PUK recovery path).
+- <span className="decision-badge success">PIN tries &gt; 0</span> The user may have just typed the wrong PIN. Continue to Step 4.
+
+</div>
+
+<div className="step-block">
+
+### Step 4 — Test the PIN with the user's claimed value
+
+Ask the user what PIN they have been entering. Run it through `pin-verify`
+**once** — and only once — so you know whether the issue is the PIN
+itself or something else.
+
+```powershell
+.\cli pin-verify -p <pin_the_user_claims> -v
+```
+
+**Response codes:**
+
+| Code | Meaning |
+|---|---|
+| `9000` | Success — the PIN works |
+| `63Cx` | Wrong PIN; `x` is the number of retries remaining (e.g. `63C5` = 5 left) |
+| `6983` | PIN is fully blocked |
+| `6A88` | No PIN defined on this token |
+
+:::caution The counter resets on success
+
+A successful `pin-verify` resets the failed-attempt counter back to its
+maximum value. This means the counter is **not** a reliable record of
+historical wrong attempts — it only reflects *consecutive* failures
+since the last success.
+
+Practical consequence: a user who has been guessing wrong PINs
+intermittently with the right one occasionally will show a healthy
+counter, not a depleted one. Don't read "6 of 6 retries remaining" as
+"this user has never failed."
+
+:::
+
+**Decide:**
+
+- <span className="decision-badge success">9000</span> Smart card is fine. The user may be confusing the FIDO PIN with the smart card PIN — they are separate. Jump to Step 7.
+- <span className="decision-badge danger">63Cx with retries &gt; 0</span> The user genuinely doesn't know their PIN. **Do not guess again.** Check provisioning records for a documented default (commonly `000000` for enterprise rollouts) before jumping to Step 6.
+- <span className="decision-badge danger">6983 / no retries</span> PIN is locked. Jump to Step 6.
+- <span className="decision-badge warning">6A88</span> No PIN was ever set. Verify the token's unique ID matches the user's record — they may have a different token than expected.
+
+</div>
+
+<div className="step-block">
+
+### Step 5 — Check OTP slot configuration
+
+*Only if the smart card PIN works but the user's OTP-based MFA is failing.*
+
+```powershell
+.\cli otp-props-get
+```
+
+**What to expect:** JSON listing configured OATH slots, algorithms, and
+configuration.
+
+**Decide:**
+
+- <span className="decision-badge success">Expected slot present</span> Likely a HOTP counter drift issue (server counter vs. token counter). See the [HOTP counter drift](./hotp-counter-drift) runbook.
+- <span className="decision-badge danger">Slot missing or incorrect</span> Reprovision the slot via your PSKC workflow.
+
+</div>
+
+<div className="step-block">
+
+### Step 6 — Reset the smart card PIN using the PUK
+
+This step assumes Step 3 confirmed a PUK exists *and* you have the PUK
+value recorded.
+
+**Check your provisioning records first:**
+
+- Password manager entry tied to the token's unique ID
+- Provisioning manifest from the original PUK installation
+- Vendor PUK list if the keys were pre-provisioned before delivery
+
+If you have the PUK:
+
+```powershell
+.\cli pin-reset-tries --puk <16_digit_puk> -n <new_8_digit_pin> -v
+```
+
+**Response codes:**
+
+| Code | Meaning |
+|---|---|
+| Success | PIN try counter resets; new PIN is now active |
+| `6A88` | No PIN or PUK defined — abort, the PUK isn't actually set |
+| `63Cx` | Wrong PUK — **stop immediately**, do not retry |
+
+:::danger PUK retries lock the token permanently
+
+PUK try counters typically lock after 3–5 attempts and have no further
+recovery. If you got `63Cx` here, treat the PUK as unknown and escalate
+to Step 8.
+
+:::
+
+**Decide:**
+
+- <span className="decision-badge success">Success</span> PIN is now the new value. Have the user change it via `pin-change` to something only they know.
+- <span className="decision-badge danger">No PUK / wrong PUK</span> Jump to Step 8 (full reprovision).
+
+</div>
+
+<div className="step-block">
+
+### Step 7 — Quick FIDO check via `clientPin`
+
+*When smart card auth works but FIDO2 logins fail.*
+
+Before listing credentials or guessing a FIDO PIN, do the fastest
+possible check: read the FIDO applet properties and look at the
+`clientPin` field in the `authenticatorGetInfo` output.
+
+:::caution Elevation required
+
+FIDO commands require administrative privileges and don't work over the
+smart card CCID interface — they need USB HID. Run your terminal as
+Administrator before continuing.
+
+:::
+
+```powershell
+.\cli fido-props-get -v
+```
+
+**Look for this block:**
+
+```json
+"Options": {
+  "clientPin": false,    ← no FIDO PIN set
+  "rk": true,
+  "credMgmt": true,
+  "ep": true
+}
+```
+
+**The `clientPin` value is the authoritative signal for FIDO state:**
+
+- <span className="decision-badge success">`clientPin: false`</span> No FIDO PIN configured. No credentials can be registered yet, no lockout is possible — **FIDO is not in use on this token.** If the user's problem was FIDO, the issue is on the relying party side, not the key.
+- <span className="decision-badge warning">`clientPin: true`</span> A FIDO PIN is set. Continue to Step 8 to check retries and credentials.
+- <span className="decision-badge danger">Option missing entirely</span> Authenticator doesn't support client PIN — vendor-specific behavior, escalate.
+
+Also note `RemainingDiscoverableCredentials`. A value matching the
+maximum (often 30) means zero credentials are stored.
+
+</div>
+
+<div className="step-block">
+
+### Step 8 — Check FIDO PIN retries and list credentials
+
+*Only reach this step if Step 7 showed `clientPin: true`.*
+
+```powershell
+.\cli fido-props-get -v
+```
+
+Within the `authenticatorGetInfo` response, look for:
+
+- `pinRetries` or equivalent retry-count field
+- `RemainingDiscoverableCredentials`
+
+If retries are healthy and the user knows their FIDO PIN, list their
+credentials:
+
+```powershell
+.\cli fido-cred-list -p <fido_pin> -v
+```
+
+:::tip CTAP errors that are answers, not problems
+
+- **`CTAP2_ERR_PIN_NOT_SET` (`0x35`)** — not a failure. The token has no
+  FIDO PIN set. No retries are burned. Same finding as `clientPin: false`
+  from Step 7. This is the response you'll get if you accidentally
+  reached Step 8 on a token with no FIDO PIN.
+- **`CTAP2_ERR_PIN_AUTH_BLOCKED` (`0x34`)** — the FIDO PIN counter is
+  exhausted. The only recovery is `fido-token-reset`. There is no
+  FIDO PUK by spec.
+
+:::
+
+**Decide:**
+
+- <span className="decision-badge success">Credentials listed</span> FIDO is functional. The user's problem is elsewhere (relying party config, browser cache, network).
+- <span className="decision-badge danger">PIN_AUTH_BLOCKED</span> FIDO is locked. Jump to Step 9.
+- <span className="decision-badge danger">Wrong PIN with retries &gt; 0</span> User doesn't know their FIDO PIN. There's no recovery short of reset — **a single wrong attempt may be the cost of certainty**, but stop after one.
+
+</div>
+
+<div className="step-block">
+
+### Step 9 — FIDO authenticator reset
+
+:::danger Destructive operation (FIDO scope only)
+
+This wipes all FIDO credentials on the token. Smart card, OATH, and
+external auth state are untouched.
+
+:::
+
+```powershell
+.\cli fido-token-reset
+```
+
+After the reset, set a new FIDO PIN:
+
+```powershell
+.\cli fido-pin-set --fido-pin <new_fido_pin>
+```
+
+Then have the user re-register the key as a FIDO2 authenticator with
+every relying party where it was previously enrolled.
+
+:::tip Set user expectations up front
+
+FIDO2 has no recovery mechanism by spec — a forgotten FIDO PIN with
+retries exhausted always means reset and re-register. Tell the user
+this before you run the reset.
+
+:::
+
+</div>
+
+<div className="step-block">
+
+### Step 10 — Full token reprovision
+
+:::danger Destructive operation
+
+This wipes everything on the token — PIV certificates, OATH slots,
+external auth keys. Only use this when Step 6 confirmed no PUK exists
+or the PUK is not recoverable, and the user accepts that re-enrollment
+is required.
+
+:::
+
+```powershell
+.\cli token-new -n <new_8_digit_pin> -v
+```
+
+Then set a PUK so this user is recoverable next time:
+
+```powershell
+.\cli puk-put --puk <16_digit_puk> -p <new_pin>
+```
+
+**Record both values in the password manager against the token's unique ID
+before the user leaves the call.**
+
+**Follow-up actions:**
+
+- Reprovision the OATH/HOTP slot via your PSKC workflow
+- Have the user re-enroll the key in your IdP
+- Have the user re-register the key as a FIDO2 authenticator with every
+  relying party
+
+</div>
+
+<div className="step-block">
+
+### Step 11 — External auth troubleshooting
+
+*Rare, but worth checking if nothing else fits.*
+
+If Step 4 returned `9000` and Step 7 showed FIDO isn't in use but the
+user still reports being unable to authenticate to a specific system,
+the issue may be the external authentication channel.
+
+```powershell
+.\cli aca-props-get
+```
+
+Look for the external auth section. Note whether it's configured and in
+what mode (static or dynamic). If dynamic, the challenge state may be
+stale:
+
+```powershell
+.\cli xauth-get-challenge -v
+.\cli xauth --xauth-key <key> -v
+```
+
+**Decide:**
+
+- <span className="decision-badge success">Authentication succeeds</span> External auth is functional — investigate the relying system instead.
+- <span className="decision-badge danger">Authentication fails</span> Either the key on file is wrong or the key on the token is corrupted. Last resort: delete and reinstall with a known-good key.
+
+</div>
+
+## A note on the "tap action"
+
+A user describing a "tap action" or "single touch code" can mean two
+completely different things, and they require different
+troubleshooting paths:
+
+| Tap type | What's happening | Where it fails | How to diagnose |
+|---|---|---|---|
+| **OATH HOTP tap** | Key emits an OTP code on contact, server validates against a counter | Server-side counter drift, OATH slot misconfigured | `otp-props-get` → check counter, compare to validation server |
+| **FIDO2 user presence touch** | Key signs a challenge after physical confirmation | Relying party rejection, FIDO PIN required, no credential registered | `fido-props-get` → check `clientPin`, list credentials |
+
+**How to tell which one the user means:**
+
+- "It types out a code by itself" → OATH HOTP
+- "A box pops up and asks me to touch the key" → FIDO2
+- "Nothing happens when I tap it" → could be either; check `otp-props-get`
+  first since it's the lower-friction call
+
+When in doubt, **`otp-props-get` is free** — run it, see what's
+provisioned, then decide whether to elevate for FIDO checks.
+
+## Quick-reference decision tree
+
+| Symptom | Likely cause | First step | Resolution path |
+|---|---|---|---|
+| "I can't log in with my key for anything" | Unknown — diagnose | Step 1 → 2 → 3 | Follow flow from Step 3 |
+| "My PIN doesn't work for smart card login" | Smart card / ACA PIN | Step 3 → 4 | Step 6 if PUK exists, else Step 10 |
+| "My key won't work for passkey logins" | FIDO PIN | Step 3 → 4 → 7 | Step 8 or 9 |
+| "My OTP code is rejected" | OATH slot or HOTP drift | Step 5 | See [HOTP counter drift](./hotp-counter-drift) |
+| "My tap code stopped working" | OATH HOTP or FIDO2 — clarify | See [tap action note](#a-note-on-the-tap-action) | Depends on which tap type |
+| "Smart card login fine, but VPN auth fails" | External auth | Step 11 | Key reset |
+
+## Notes for PowerShell environments
+
+PowerShell ISE will display `RemoteException` errors when verbose logging
+is used, because the CLI writes logs to STDERR. This is cosmetic — the
+command still works. Redirect stderr to a file if it's distracting:
+
+```powershell
+.\cli pin-verify -p 123456 -v 2> trace.txt
+```
+
+## Closing the ticket
+
+Before closing, capture:
+
+1. **Unique ID** of the token
+2. **Which applet was locked** (smart card / FIDO / external auth / OATH)
+   — or, importantly, **whether it was a lockout at all**, since many
+   reported lockouts turn out to be user error or server-side rejection
+3. **What action resolved it** (PIN verify, PUK reset, FIDO reset, full
+   reprovision, no action — just told user the PIN)
+4. **New PIN/PUK values** — in the password manager, never in the ticket
+   body
+5. **User actions still required** — FIDO re-registration, OATH
+   re-enrollment, password change at next login

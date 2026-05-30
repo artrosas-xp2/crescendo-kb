@@ -1,0 +1,250 @@
+---
+sidebar_position: 3
+title: HOTP counter drift
+description: Diagnosing and resolving HOTP counter drift between a hardware token and the validation server
+---
+
+# HOTP counter drift
+
+A user reports their "tap code" or hardware OTP stopped working. The
+token looks healthy by every diagnostic check, the user can produce a
+fresh 6-digit code on demand, but the validation server keeps rejecting
+it. This is almost always **HOTP counter drift** — the event counter on
+the token and the event counter on the validation server have fallen
+out of sync.
+
+This runbook covers what counter drift is, why it happens at scale,
+and how to fix it without reprovisioning.
+
+---
+
+## How HOTP works (the 30-second version)
+
+HOTP — HMAC-based One-Time Password, RFC 4226 — generates a code by
+combining:
+
+1. A shared secret seed (provisioned to both token and server)
+2. A monotonically incrementing **counter value**
+3. The HMAC-SHA1 algorithm
+
+Each time the user generates a code (tapping the key, pressing a
+button), the token increments its counter. Each time the server
+validates a code, the server increments its counter. As long as the
+two counters stay in sync, codes work. The moment they diverge beyond
+the server's tolerance window, codes start being rejected.
+
+**Critically — there's no clock involved.** Unlike TOTP, HOTP doesn't
+care about time. A code generated on a token will be valid forever, as
+long as the server hasn't already seen that counter value. This is
+also why TOTP doesn't have a drift problem in the same way — TOTP
+drifts in time, which both sides measure independently, and small
+clock skew is handled trivially.
+
+---
+
+## How drift happens
+
+The token's counter and the server's counter are independent and only
+indirectly coupled. They drift apart whenever:
+
+- **User taps the key without authenticating.** Every tap increments
+  the token counter. If the resulting code isn't submitted to the
+  server (user typed it into the wrong field, copied it but never
+  hit enter, accidentally double-tapped), the server counter stays
+  put while the token counter moves forward.
+- **User authenticates on a system the server doesn't know about.**
+  Some test or staging systems share the seed but not the production
+  counter state.
+- **Provisioning seeded counters differently.** If the PSKC import
+  set the server counter to a value other than the token's actual
+  current counter, drift exists from day one.
+- **Server-side state was reset or restored from backup.** Server
+  counter regresses while token counter stays put. Codes that would
+  have been valid now appear "already used."
+- **The same seed was imported into more than one validation system.**
+  Each system maintains its own counter; the user authenticates
+  against one, increments only that one, and the others fall behind.
+
+At small scale none of this is common enough to matter. At rollout
+scale — thousands or tens of thousands of keys — drift is a steady
+trickle of help desk calls.
+
+---
+
+## How drift looks in the diagnostic flow
+
+**Symptom from the user:** "My key isn't working anymore. The code
+shows up but the website says it's wrong."
+
+**Token-side check passes:** Running `otp-props-get` shows the slot is
+provisioned, the algorithm is HOTP, the counter has a value. The
+token can generate codes fine.
+
+**Smart card PIN works:** `pin-verify` returns `9000`.
+
+**FIDO is irrelevant:** Either not in use (`clientPin: false`) or
+not the user's complaint.
+
+**This combination — healthy token, OATH HOTP slot provisioned, codes
+generated but rejected — is the signature of counter drift.** The
+issue is server-side, not token-side.
+
+---
+
+## Diagnosing drift
+
+### Step 1 — Read the token-side counter
+
+```powershell
+.\cli otp-props-get
+```
+
+In the HOTP slot's properties, find the `CounterValue` field. It will
+look like:
+
+```json
+"CounterValue": "00-00-00-00-F7-BD-E0-6A"
+```
+
+That's a big-endian 8-byte counter. Convert it to a decimal integer
+for comparison with the server side.
+
+**Interpretation gotcha:** the counter on the token may already be at a
+large value if it was **seeded** to a nonzero starting point during
+provisioning. A counter of ~4 billion isn't 4 billion taps — it's
+almost certainly a provisioning artifact. Don't assume the magnitude
+tells you anything about usage; only the *delta* between token and
+server matters.
+
+### Step 2 — Find the server-side counter
+
+This depends entirely on the validation platform. A few common cases:
+
+| Platform | Where to look |
+|---|---|
+| Symantec VIP | VIP Manager → Credential search by serial → token detail shows last-used and counter |
+| Ping (PingFederate / PingID with OATH adapter) | Token store in the OATH adapter config, or the underlying database |
+| RSA Authentication Manager | Self-service console or AM operations console, token detail view |
+| Custom RADIUS + OATH | The OATH library's token store — typically a database table or JSON file |
+
+Pull the same counter value the server has for this user's credential
+ID or serial. Convert both to the same numeric base for comparison.
+
+### Step 3 — Compare and classify
+
+| Comparison | Drift type | Severity |
+|---|---|---|
+| Token > Server, within look-ahead window | **Standard forward drift** | Common — server should resync on next valid code |
+| Token > Server, beyond look-ahead window | **Excessive forward drift** | User has been tapping a lot without submitting; manual resync needed |
+| Token < Server | **Backward drift** | Unusual — usually means server was restored from backup, or the seed was reused elsewhere |
+| Token == Server | **Not drift** | Counter is fine; the rejection is from a different cause |
+
+The "look-ahead window" is a server-side setting (commonly 10 to 100
+events forward) that determines how many counter values the server
+will try before declaring a code invalid. A token a few clicks ahead
+of the server will self-correct on the next successful validation. A
+token hundreds of clicks ahead needs manual intervention.
+
+---
+
+## Resolving drift
+
+### Option 1 — Server-side resync (most cases)
+
+Almost every OATH validation platform supports **counter resync** —
+the operator provides two consecutive codes from the token, the server
+finds where those codes fall in the sequence, and adjusts its counter
+accordingly.
+
+Generic flow:
+
+1. Ask the user to generate **two consecutive HOTP codes** on the key
+   without typing them anywhere except where you tell them
+2. Enter both codes into the platform's resync UI
+3. Server scans forward from its current counter, finds the matching
+   pair, and updates its counter to match
+
+This is non-destructive and doesn't touch the token at all.
+
+### Option 2 — Manual server counter update
+
+If the resync UI isn't available or isn't working, you can directly
+set the server-side counter to the token's current value plus a small
+buffer (the look-ahead window).
+
+This requires admin access to the validation platform's data store and
+should be done with care — setting the server counter too low risks
+replay-window issues, setting it too high makes future codes invalid
+until the user catches up.
+
+### Option 3 — Reprovision the slot
+
+If drift is severe or recurring, reprovision the HOTP slot with a
+fresh seed and a known-good counter starting point on both sides.
+This is the most invasive option and forces the user to re-enroll the
+credential.
+
+```powershell
+.\cli otp-slot-delete --slot 1 -p <pin>
+.\cli otp-slot-configure --slot 1 --algorithm HOTP --digits 6 --counter 0 --key <new_seed> -p <pin>
+```
+
+Then import the matching PSKC file or seed value into the validation
+server with the same starting counter.
+
+---
+
+## Preventing drift at rollout scale
+
+A few rollout-level controls that reduce drift incidents:
+
+1. **Set the look-ahead window generously.** A window of 50–100 events
+   trades a small reduction in replay protection for a large reduction
+   in help desk calls. For event-based OTP used as a second factor
+   (not the only factor), this is a reasonable tradeoff.
+
+2. **Seed both sides from the same source at provisioning.** If the
+   PSKC file is the source of truth, make sure both the token and the
+   validation server are populated from the same file in the same
+   workflow. Drift on day one is almost always a provisioning gap.
+
+3. **Don't reuse seeds across validation systems.** If the same OATH
+   credential is meant to authenticate to multiple platforms, route
+   them through a single validation service with shared counter state
+   rather than duplicating the seed.
+
+4. **Document the counter format.** Whether your server stores
+   counters in decimal, hex, or as 8-byte big-endian binary affects
+   how operators read and compare them. A wiki page with one worked
+   example saves hours of confusion later.
+
+5. **Educate users on the "don't tap unless you're submitting"
+   habit.** Most user-induced drift is from idle tapping while the
+   key is plugged in.
+
+---
+
+## When the token counter is enormous
+
+If `otp-props-get` returns a counter value in the billions, **don't
+panic.** This is almost always one of:
+
+- The counter was seeded to a large starting value during provisioning
+  (some workflows do this intentionally to make replay across reissued
+  keys harder)
+- The field is being interpreted as a large integer when it's actually
+  encoding multiple subfields
+- The token was used heavily for testing before deployment
+
+The token-side counter is a black box from your perspective — what
+matters is whether it matches the server. Compare the two and act on
+the delta, not the absolute value.
+
+---
+
+## Related runbooks
+
+- [Lockout diagnosis](./lockout-diagnosis) — the parent flow that
+  routes here from Step 5
+- [Provisioning gaps](../reference/provisioning-gaps) — rollout-level
+  issues that contribute to drift incidents

@@ -1,0 +1,113 @@
+---
+sidebar_position: 2
+title: Applet architecture
+description: How multiple security applets coexist on a single physical hardware token
+---
+
+# Applet architecture
+
+A modern hardware security key is not a single device — it's a smart card
+running multiple isolated applets, each implementing a different
+authentication standard. Understanding which applet does what is the
+single biggest unlock for diagnosing user-reported lockouts.
+
+This page maps the conceptual model.
+
+## The applets
+
+A typical enterprise-grade dual-interface key carries four applets:
+
+| Applet | Standard | Purpose | PIN |
+|---|---|---|---|
+| **ACA** | Vendor-specific | Access control — manages PIN, PUK, external auth | "The PIN" — 6–8 digits |
+| **PIV** | FIPS 201 | X.509 certificates, smart card login | Shares the ACA PIN |
+| **OATH** | RFC 4226 (HOTP), RFC 6238 (TOTP) | One-time passwords | Configurable per slot |
+| **FIDO2** | CTAP2 / WebAuthn | Passkeys, passwordless auth | Separate FIDO PIN |
+
+The PIV applet doesn't manage its own PIN — it delegates to ACA. So in
+practice you have **two completely independent PINs** on the same physical
+device:
+
+1. The **smart card PIN** (managed by ACA, used by PIV and OATH)
+2. The **FIDO PIN** (managed by the FIDO2 applet, used only for passkeys)
+
+## Why this matters for support
+
+When a user calls in saying "my PIN doesn't work," they usually mean *a*
+PIN — they don't know there are two. The diagnostic question that
+matters is **which login were you trying?**
+
+| User says | Likely PIN |
+|---|---|
+| "I can't log in to Windows with my smart card" | Smart card PIN (ACA/PIV) |
+| "I can't use my key for VPN" | Smart card PIN, or external auth |
+| "My OTP code is rejected" | OATH (no PIN issue — counter drift) |
+| "I can't sign in to my passkey-enabled account" | FIDO PIN |
+| "It worked yesterday for one thing but not another" | Could be either — both, even |
+
+## Recovery paths differ by applet
+
+| Applet | Wrong PIN | Locked out | Recovery |
+|---|---|---|---|
+| **ACA / PIV** | Burns retry | Retries = 0 | PUK reset (if PUK exists) or full reprovision |
+| **OATH** | N/A (no PIN per slot by default) | N/A | Reconfigure slot |
+| **FIDO2** | Burns retry | Retries = 0 | **No PUK by spec** — full FIDO reset only |
+
+The FIDO2 "no PUK by spec" detail catches everyone the first time. The
+FIDO2 standard explicitly does not define a PIN unblock mechanism — a
+forgotten FIDO PIN with retries exhausted means resetting the FIDO applet
+and re-registering with every relying party. Set this expectation with
+users before they enroll.
+
+## Independent retry counters
+
+Each applet maintains its own retry counter. This means:
+
+- You can have a working smart card PIN and a fully locked FIDO PIN at
+  the same time (very common — users register for passkeys, set a FIDO
+  PIN, forget it, and never notice until they try to use it months
+  later)
+- Resetting one PIN does not reset the other
+- The smart card PIN counter is independent from the PUK counter
+- The PUK counter also locks permanently if exhausted — typically
+  3–5 wrong attempts
+
+## What survives what
+
+Knowing what each recovery operation destroys is critical for setting
+user expectations:
+
+| Operation | Smart card certs | OATH slots | FIDO creds | External auth keys |
+|---|---|---|---|---|
+| `pin-change` | ✅ Keeps | ✅ Keeps | ✅ Keeps | ✅ Keeps |
+| `pin-reset-tries` (PUK) | ✅ Keeps | ✅ Keeps | ✅ Keeps | ✅ Keeps |
+| `fido-pin-change` | ✅ Keeps | ✅ Keeps | ✅ Keeps | ✅ Keeps |
+| `fido-token-reset` | ✅ Keeps | ✅ Keeps | ❌ Wipes | ✅ Keeps |
+| `token-new` | ❌ Wipes | ❌ Wipes | ❓ Verify | ❌ Wipes |
+| `token-reset` | ❌ Wipes | ❌ Wipes | ❓ Verify | ❌ Wipes |
+
+:::note FIDO scope on token-reset
+
+The behavior of `token-new` and `token-reset` with respect to the FIDO
+applet is worth verifying against your specific vendor's product
+documentation. The smart card reset path and the FIDO applet are
+managed through different interfaces (CCID vs HID), and not every
+"reset everything" command necessarily reaches both. When in doubt,
+follow a `token-reset` with a separate `fido-token-reset` to be sure.
+
+:::
+
+## Communication interfaces
+
+The applets aren't all reachable the same way:
+
+- **ACA, PIV, OATH** — accessed over USB CCID (the smart card interface)
+  or NFC. Standard PC/SC channels.
+- **FIDO2** — accessed over USB HID using the CTAP-HID protocol. This
+  is why FIDO commands need elevated privileges and why FIDO operations
+  don't work over the CCID interface even though it's the same physical
+  device.
+
+If the CLI tool reports it can't reach the FIDO applet, the first thing
+to check is whether you're running elevated and whether the key is
+plugged in directly (some hubs and adapters present only one interface).
