@@ -12,6 +12,7 @@ const sidebars = {
         'runbooks/lockout-diagnosis',
         'runbooks/case-study-lockout-that-wasnt',
         'runbooks/hotp-counter-drift',
+        'runbooks/re-seeding-process',
       ],
     },
     {

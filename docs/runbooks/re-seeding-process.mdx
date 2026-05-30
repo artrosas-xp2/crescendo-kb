@@ -1,0 +1,122 @@
+---
+sidebar_position: 4
+title: The re-seeding process
+description: How to fully re-seed an OATH HOTP token when resync isn't enough
+---
+
+# The Re-Seeding Process
+
+
+
+When [HOTP counter drift](./hotp-counter-drift) is severe enough that
+server-side resync fails — or when the underlying seed is suspected to
+be compromised, lost, or corrupted — the only path forward is to fully
+re-seed the credential on both the token and the server.
+
+This is the most invasive option in the OATH recovery toolkit. It
+invalidates every previous code from the credential, forces the user
+to re-enroll, and requires coordination between the provisioning
+workflow and the validation platform. Don't reach for this when a
+resync will do.
+
+## When to re-seed
+
+Use this process when:
+
+- Resync has been attempted and the server still rejects valid codes
+- The PSKC seed file is unrecoverable on either side
+- The seed is suspected to be exposed (logged in plaintext, stored
+  insecurely, shared inappropriately)
+- The credential has been transferred between users (the new user
+  needs a fresh seed)
+
+Don't use this for ordinary drift — see the
+[HOTP counter drift runbook](./hotp-counter-drift) first.
+
+## The four steps
+
+To get the token working again, perform these steps in order. Skipping
+or reordering them will leave the token and server in inconsistent
+states.
+
+### 1. Generate a new seed
+
+Create a completely new secret key string. The seed should be:
+
+- Generated from a cryptographically secure random source
+- The correct length for your HOTP algorithm (typically 160 bits for
+  SHA-1, 256 bits for SHA-256)
+- Encoded in the format your provisioning workflow expects (commonly
+  Base32 for PSKC, hex for some vendor tooling)
+
+Never reuse a previous seed. Never derive a seed from a predictable
+input (username, employee ID, timestamp). The seed is the entire
+security boundary of the credential — treat it accordingly.
+
+### 2. Update the server
+
+Upload the new seed to your authentication server. Depending on the
+platform, this is either:
+
+- Importing a fresh PSKC file containing only this credential
+- Updating the credential record directly through the platform's admin
+  API or UI
+- Re-running the provisioning pipeline with the new seed
+
+The server's counter for this credential should be reset to zero (or
+to whatever starting value your provisioning convention uses)
+simultaneously with the seed update.
+
+### 3. Program the token
+
+Flash or program the new seed onto the physical token. The exact
+mechanism depends on the token model:
+
+- USB-attached programmable tokens: vendor CLI tool with the seed and
+  slot number
+- NFC-programmable tokens: vendor mobile app or NFC writer utility
+- Pre-programmed cards: send the user a new card with the new seed
+  baked in at manufacture
+
+After programming, generate one OTP code from the token and confirm
+the seed wrote correctly before continuing.
+
+### 4. Reset the counter
+
+Set both the token and server HOTP counters back to zero.
+
+Doing this last is critical. If the counter is reset before the seed
+is programmed, the next OTP generation will desync immediately. If
+it's reset before the server is updated, the user's first
+authentication attempt will fail.
+
+The correct order is:
+
+1. New seed exists on the server (with counter at 0)
+2. New seed exists on the token (with counter at 0)
+3. User generates their first code
+4. Server accepts it (counter advances to 1 on both sides)
+5. Subsequent codes work normally
+
+## Verification
+
+After re-seeding, ask the user to authenticate once and confirm the
+code is accepted. Then ask them to authenticate a second time, on a
+fresh tap. Both should succeed. If only the first works, the counter
+didn't advance properly on one side — investigate before closing the
+ticket.
+
+## Documentation
+
+Capture the following in your ticket and provisioning records:
+
+- The token's unique ID (CUID)
+- The reason for re-seeding (drift, compromise, transfer)
+- The date the new seed was issued
+- The new starting counter value (typically 0)
+- Confirmation that the old seed has been invalidated in any backup or
+  staging environments
+
+Re-seeding without invalidating the old seed everywhere leaves a
+shadow credential that can still authenticate. That's a real
+incident-level mistake. Don't skip the invalidation step.
