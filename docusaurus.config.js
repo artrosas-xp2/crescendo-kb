@@ -12,8 +12,8 @@ const config = {
   tagline: 'Field notes from the trenches of enterprise MFA',
   favicon: 'img/favicon.ico',
 
-  url: 'https://artrosas.com',
-  baseUrl: '/kb/',
+  url: 'https://kb.artrosas.com',
+  baseUrl: '/',
 
   organizationName: 'artrosas',
   projectName: 'kb',
