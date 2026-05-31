@@ -1,0 +1,1107 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>HOTP Token Tester</title>
+        <style>
+            *,
+            *::before,
+            *::after {
+                box-sizing: border-box;
+                margin: 0;
+                padding: 0;
+            }
+
+            :root {
+                --bg: #ffffff;
+                --surface: #f8f9fb;
+                --border: #e2e5ea;
+                --text: #1a1a1a;
+                --text-secondary: #6b7280;
+                --primary: #5e6ad2;
+                --primary-dark: #4555c8;
+                --success: #16a34a;
+                --success-bg: #f0fdf4;
+                --error: #dc2626;
+                --error-bg: #fef2f2;
+                --mono:
+                    "SF Mono", "Monaco", "Inconsolata", "Fira Mono", monospace;
+                --sans:
+                    -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+                    sans-serif;
+                --radius: 8px;
+            }
+
+            @media (prefers-color-scheme: dark) {
+                :root {
+                    --bg: #0e0e10;
+                    --surface: #161618;
+                    --border: #27272a;
+                    --text: #ededed;
+                    --text-secondary: #a1a1aa;
+                    --success-bg: #052e16;
+                    --error-bg: #450a0a;
+                }
+            }
+
+            body {
+                font-family: var(--sans);
+                background: var(--bg);
+                color: var(--text);
+                min-height: 100vh;
+                padding: 2rem 1rem;
+                font-size: 15px;
+                line-height: 1.6;
+            }
+
+            .container {
+                max-width: 950px;
+                margin: 0 auto;
+            }
+
+            header {
+                margin-bottom: 2rem;
+            }
+            header h1 {
+                font-size: 1.5rem;
+                font-weight: 700;
+                margin-bottom: 0.3rem;
+            }
+            header p {
+                color: var(--text-secondary);
+                font-size: 0.9rem;
+            }
+
+            /* ─── Grid Layout ─────────────────────────────────────────── */
+            .dashboard-grid {
+                display: grid;
+                grid-template-columns: 320px 1fr;
+                gap: 1.5rem;
+                align-items: start;
+            }
+
+            @media (max-width: 768px) {
+                .dashboard-grid {
+                    grid-template-columns: 1fr;
+                }
+            }
+
+            .panel {
+                background: var(--surface);
+                border: 1px solid var(--border);
+                border-radius: var(--radius);
+                padding: 1.25rem;
+            }
+
+            .panel-title {
+                font-size: 0.8rem;
+                font-weight: 600;
+                text-transform: uppercase;
+                letter-spacing: 0.05em;
+                color: var(--text-secondary);
+                margin-bottom: 1rem;
+                border-bottom: 1px solid var(--border);
+                padding-bottom: 0.5rem;
+            }
+
+            /* ─── Forms & Inputs ──────────────────────────────────────── */
+            .field {
+                margin-bottom: 1rem;
+            }
+            label {
+                display: block;
+                font-size: 0.85rem;
+                font-weight: 700;
+                margin-bottom: 0.4rem;
+            }
+
+            input,
+            select {
+                width: 100%;
+                padding: 0.5rem 0.7rem;
+                font-size: 0.9rem;
+                font-family: inherit;
+                background: var(--bg);
+                border: 1px solid var(--border);
+                border-radius: 6px;
+                color: var(--text);
+                outline: none;
+            }
+            input:focus,
+            select:focus {
+                border-color: var(--primary);
+            }
+            input.mono {
+                font-family: var(--mono);
+                font-size: 0.85rem;
+            }
+
+            .helper-text {
+                font-size: 0.75rem;
+                color: var(--text-secondary);
+                margin-top: 0.4rem;
+                line-height: 1.4;
+            }
+            .helper-text code {
+                font-family: var(--mono);
+                background: var(--bg);
+                padding: 0.1em 0.3em;
+                border-radius: 3px;
+                border: 1px solid var(--border);
+            }
+
+            .row {
+                display: flex;
+                gap: 0.75rem;
+            }
+            .row .field {
+                flex: 1;
+            }
+
+            .btn {
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+                padding: 0.5rem 1rem;
+                font-size: 0.85rem;
+                font-weight: 600;
+                border: none;
+                border-radius: 6px;
+                cursor: pointer;
+                transition:
+                    background 0.15s,
+                    color 0.15s;
+            }
+            .btn-primary {
+                background: var(--primary);
+                color: white;
+                width: 100%;
+                padding: 0.7rem;
+                font-size: 0.95rem;
+            }
+            .btn-primary:hover {
+                background: var(--primary-dark);
+            }
+            .btn-secondary {
+                background: var(--bg);
+                color: var(--text);
+                border: 1px solid var(--border);
+            }
+            .btn-secondary:hover {
+                border-color: var(--primary);
+                color: var(--primary);
+            }
+
+            .seed-actions {
+                display: flex;
+                gap: 0.5rem;
+                margin-top: 0.5rem;
+            }
+            .seed-actions .btn {
+                flex: 1;
+            }
+
+            /* ─── Tabs & Active Modes ─────────────────────────────────── */
+            .tabs {
+                display: flex;
+                gap: 0.5rem;
+                margin-bottom: 1rem;
+                overflow-x: auto;
+                padding-bottom: 4px;
+            }
+            .tab {
+                flex: 1;
+                white-space: nowrap;
+                padding: 0.6rem;
+                font-size: 0.85rem;
+                font-weight: 600;
+                background: var(--surface);
+                border: 1px solid var(--border);
+                border-radius: var(--radius);
+                cursor: pointer;
+                color: var(--text-secondary);
+            }
+            .tab.active {
+                background: var(--primary);
+                color: white;
+                border-color: var(--primary);
+            }
+
+            .mode-config {
+                display: none;
+            }
+            .mode-config.active {
+                display: block;
+            }
+
+            /* ─── Visual Drift Indicator ──────────────────────────────── */
+            .drift-container {
+                display: none;
+                margin: 2rem 0 1rem;
+                padding: 0 10px;
+            }
+            .drift-container.active {
+                display: block;
+            }
+            .drift-track {
+                position: relative;
+                height: 6px;
+                background: var(--border);
+                border-radius: 3px;
+            }
+            .drift-expected {
+                position: absolute;
+                top: -5px;
+                left: 0;
+                width: 16px;
+                height: 16px;
+                background: var(--text-secondary);
+                border-radius: 50%;
+                transform: translateX(-50%);
+            }
+            .drift-max {
+                position: absolute;
+                top: -5px;
+                right: 0;
+                width: 16px;
+                height: 16px;
+                background: var(--text-secondary);
+                border-radius: 50%;
+                transform: translateX(50%);
+            }
+            .drift-actual {
+                position: absolute;
+                top: -7px;
+                width: 20px;
+                height: 20px;
+                background: var(--success);
+                border-radius: 50%;
+                transform: translateX(-50%);
+                border: 3px solid var(--surface);
+                z-index: 2;
+                transition: left 0.4s ease-out;
+            }
+
+            .drift-labels {
+                display: flex;
+                justify-content: space-between;
+                margin-top: 0.8rem;
+                font-size: 0.75rem;
+                color: var(--text-secondary);
+                font-family: var(--mono);
+            }
+            .drift-label-match {
+                text-align: center;
+                font-weight: bold;
+                color: var(--success);
+                margin-top: 0.5rem;
+                font-size: 0.8rem;
+            }
+
+            /* ─── Unified Table ───────────────────────────────────────── */
+            .result-container {
+                margin-top: 1.5rem;
+                display: none;
+            }
+            .result-container.active {
+                display: block;
+            }
+
+            .computation-context {
+                background: var(--bg);
+                border: 1px solid var(--border);
+                border-radius: 6px;
+                padding: 0.75rem;
+                margin-bottom: 1rem;
+                font-size: 0.8rem;
+                color: var(--text-secondary);
+                display: flex;
+                flex-direction: column;
+                gap: 0.25rem;
+            }
+            .computation-context strong {
+                color: var(--text);
+                font-weight: 600;
+            }
+            .computation-context .mono {
+                font-family: var(--mono);
+                font-size: 0.85rem;
+                color: var(--primary);
+            }
+
+            .status-banner {
+                padding: 0.75rem 1rem;
+                border-radius: 6px;
+                font-weight: 600;
+                font-size: 0.9rem;
+                margin-bottom: 1rem;
+                display: none;
+            }
+            .status-banner.success {
+                display: block;
+                background: var(--success-bg);
+                color: var(--success);
+                border: 1px solid currentColor;
+            }
+            .status-banner.error {
+                display: block;
+                background: var(--error-bg);
+                color: var(--error);
+                border: 1px solid currentColor;
+            }
+
+            .result-table {
+                width: 100%;
+                border-collapse: collapse;
+                font-size: 0.85rem;
+            }
+            .result-table th {
+                text-align: left;
+                padding: 0.6rem;
+                font-size: 0.75rem;
+                font-weight: 600;
+                text-transform: uppercase;
+                color: var(--text-secondary);
+                border-bottom: 2px solid var(--border);
+            }
+            .result-table td {
+                padding: 0.6rem;
+                border-bottom: 1px solid var(--border);
+                font-family: var(--mono);
+                vertical-align: middle;
+            }
+            .result-table tr.match td {
+                color: var(--success);
+                font-weight: 700;
+                background: var(--success-bg);
+            }
+
+            .table-tap-input {
+                width: 100px;
+                font-family: var(--mono);
+                padding: 0.25rem 0.5rem;
+            }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <header>
+                <h1>HOTP Token Tester</h1>
+                <p>
+                    Local browser verification and resynchronization for RFC
+                    4226 tokens.
+                </p>
+            </header>
+
+            <div class="dashboard-grid">
+                <aside class="panel">
+                    <div class="panel-title">TOKEN CONFIGURATION</div>
+
+                    <div class="row">
+                        <div class="field">
+                            <label>Algorithm</label>
+                            <select id="algoSelect">
+                                <option>SHA-1</option>
+                                <option>SHA-256</option>
+                                <option>SHA-512</option>
+                            </select>
+                        </div>
+                        <div class="field">
+                            <label>Encoding</label>
+                            <select
+                                id="encodingSelect"
+                                onchange="setEncoding(this.value)"
+                            >
+                                <option value="hex" selected>
+                                    Hexadecimal
+                                </option>
+                                <option value="base32">Base32</option>
+                                <option value="base64">Base64</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <div class="field">
+                        <label>One-Time Password Secret Key</label>
+                        <input
+                            id="seedInput"
+                            class="mono"
+                            type="text"
+                            autocomplete="off"
+                            spellcheck="false"
+                            placeholder="secret key"
+                            oninput="saveSeed()"
+                        />
+                        <div id="encodingHelp" class="helper-text"></div>
+                        <div class="seed-actions">
+                            <button
+                                class="btn btn-secondary"
+                                onclick="generateSeed()"
+                            >
+                                ⚡ Random
+                            </button>
+                            <button
+                                id="copyBtn"
+                                class="btn btn-secondary"
+                                onclick="copySeed(this)"
+                            >
+                                Copy
+                            </button>
+                        </div>
+                    </div>
+
+                    <div class="field" style="max-width: 150px">
+                        <label>Digits</label>
+                        <select id="digitsSelect">
+                            <option value="6">6</option>
+                            <option value="8">8</option>
+                            <option value="10">10</option>
+                        </select>
+                    </div>
+                </aside>
+
+                <main>
+                    <div class="tabs">
+                        <button
+                            class="tab active"
+                            data-mode="verify"
+                            onclick="setMode('verify')"
+                        >
+                            Verify Single Code
+                        </button>
+                        <button
+                            class="tab"
+                            data-mode="generate"
+                            onclick="setMode('generate')"
+                        >
+                            Generate Forward
+                        </button>
+                        <button
+                            class="tab"
+                            data-mode="resync"
+                            onclick="setMode('resync')"
+                        >
+                            Resync to CSV
+                        </button>
+                    </div>
+
+                    <div class="panel">
+                        <div class="panel-title" id="toolTitle">
+                            Verify Single Code
+                        </div>
+
+                        <div id="config-verify" class="mode-config active">
+                            <div class="row">
+                                <div class="field">
+                                    <label>Token Code</label>
+                                    <input
+                                        id="verifyCode"
+                                        class="mono"
+                                        type="text"
+                                        maxlength="10"
+                                        placeholder="e.g. 492817"
+                                    />
+                                </div>
+                                <div class="field">
+                                    <label>Expected Counter</label>
+                                    <input
+                                        id="verifyCounter"
+                                        class="mono"
+                                        type="number"
+                                        value="0"
+                                        min="0"
+                                    />
+                                </div>
+                                <div class="field">
+                                    <label>Look-ahead</label>
+                                    <select id="lookaheadSelect">
+                                        <option value="10">10</option>
+                                        <option value="25" selected>25</option>
+                                        <option value="100">100</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <button
+                                class="btn btn-primary"
+                                onclick="runVerify()"
+                            >
+                                Scan for Match
+                            </button>
+
+                            <div id="driftVisualizer" class="drift-container">
+                                <div class="drift-track">
+                                    <div
+                                        class="drift-expected"
+                                        title="Expected Start"
+                                    ></div>
+                                    <div
+                                        id="driftActual"
+                                        class="drift-actual"
+                                        style="left: 0%"
+                                        title="Matched Counter"
+                                    ></div>
+                                    <div
+                                        class="drift-max"
+                                        title="Look-ahead Limit"
+                                    ></div>
+                                </div>
+                                <div class="drift-labels">
+                                    <span id="driftLblStart">0</span>
+                                    <span id="driftLblEnd">25</span>
+                                </div>
+                                <div
+                                    id="driftLblMatch"
+                                    class="drift-label-match"
+                                ></div>
+                            </div>
+                        </div>
+
+                        <div id="config-generate" class="mode-config">
+                            <div class="row">
+                                <div class="field">
+                                    <label>Start Counter</label>
+                                    <input
+                                        id="genCounter"
+                                        class="mono"
+                                        type="number"
+                                        value="0"
+                                        min="0"
+                                    />
+                                </div>
+                                <div class="field">
+                                    <label>Codes to compute</label>
+                                    <select id="genCount">
+                                        <option value="5">5</option>
+                                        <option value="10" selected>10</option>
+                                        <option value="20">20</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <button
+                                class="btn btn-primary"
+                                onclick="runGenerate()"
+                            >
+                                Compute Codes
+                            </button>
+                        </div>
+
+                        <div id="config-resync" class="mode-config">
+                            <p class="helper-text" style="margin-bottom: 1rem">
+                                Tap the token 3 times in a row. We will locate
+                                the sequence and generate a new seed CSV aligned
+                                to the IDP's required state.
+                            </p>
+                            <div class="field">
+                                <label>Token Serial Number</label>
+                                <input
+                                    id="resyncSerial"
+                                    class="mono"
+                                    type="text"
+                                    placeholder="e.g. CRES12345678"
+                                />
+                            </div>
+                            <div class="row">
+                                <div class="field">
+                                    <label>Tap 1</label
+                                    ><input
+                                        id="resyncCode1"
+                                        class="mono"
+                                        type="text"
+                                        maxlength="10"
+                                    />
+                                </div>
+                                <div class="field">
+                                    <label>Tap 2</label
+                                    ><input
+                                        id="resyncCode2"
+                                        class="mono"
+                                        type="text"
+                                        maxlength="10"
+                                    />
+                                </div>
+                                <div class="field">
+                                    <label>Tap 3</label
+                                    ><input
+                                        id="resyncCode3"
+                                        class="mono"
+                                        type="text"
+                                        maxlength="10"
+                                    />
+                                </div>
+                            </div>
+                            <div class="row">
+                                <div class="field">
+                                    <label>Start Search From Counter</label>
+                                    <input
+                                        id="resyncCounter"
+                                        class="mono"
+                                        type="number"
+                                        value="0"
+                                        min="0"
+                                    />
+                                </div>
+                                <div class="field">
+                                    <label>Max Search Depth</label>
+                                    <select id="resyncLookahead">
+                                        <option value="100" selected>
+                                            100
+                                        </option>
+                                        <option value="500">500</option>
+                                        <option value="1000">1000</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <button
+                                class="btn btn-primary"
+                                onclick="runResync()"
+                            >
+                                Find Sequence & Export CSV
+                            </button>
+                        </div>
+
+                        <div
+                            id="resultsWrapper"
+                            class="result-container"
+                            aria-live="polite"
+                        >
+                            <div
+                                class="computation-context"
+                                id="computationContext"
+                            >
+                                <div>
+                                    <strong>Active Seed:</strong>
+                                    <span class="mono" id="ctxSeed">—</span>
+                                </div>
+                                <div>
+                                    <strong>Parameters:</strong>
+                                    <span id="ctxAlgo">—</span> yielding
+                                    <span id="ctxDigits">—</span> digits
+                                </div>
+                            </div>
+                            <div id="statusBanner" class="status-banner"></div>
+                            <table class="result-table" id="dataTable">
+                                <thead id="dataHead"></thead>
+                                <tbody id="dataBody"></tbody>
+                            </table>
+                        </div>
+                    </div>
+                </main>
+            </div>
+        </div>
+
+        <script>
+            let currentMode = "verify";
+            let currentEncoding = "hex";
+
+            const helpTexts = {
+                hex: "Hex: pairs of 0-9 a-f (e.g. <code>75d7bc8...</code>). Matches Crescendo Manager default.",
+                base32: "Base32: A-Z, 2-7 only (e.g. <code>GEZDGNBV...</code>). Common in authenticator apps.",
+                base64: "Base64: A-Z, a-z, 0-9, +, /, =. Less common for OATH seeds.",
+            };
+
+            // ─── Encoding Helpers ──────────────────────────────────────────────────────
+            function hexToBytes(s) {
+                const hex = s.replace(/[\s-]/g, "");
+                const out = new Uint8Array(hex.length / 2);
+                for (let i = 0; i < hex.length; i += 2)
+                    out[i / 2] = parseInt(hex.substr(i, 2), 16);
+                return out;
+            }
+            function bytesToHex(bytes) {
+                return Array.from(bytes)
+                    .map((b) => b.toString(16).padStart(2, "0"))
+                    .join("");
+            }
+            function base32ToBytes(s) {
+                const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+                s = s.replace(/=+$/, "").replace(/\s/g, "").toUpperCase();
+                let bits = 0,
+                    value = 0,
+                    out = [];
+                for (const ch of s) {
+                    value = (value << 5) | alphabet.indexOf(ch);
+                    bits += 5;
+                    if (bits >= 8) {
+                        bits -= 8;
+                        out.push((value >> bits) & 0xff);
+                    }
+                }
+                return new Uint8Array(out);
+            }
+            function bytesToBase32(bytes) {
+                const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+                let bits = 0,
+                    value = 0,
+                    out = "";
+                for (const b of bytes) {
+                    value = (value << 8) | b;
+                    bits += 8;
+                    while (bits >= 5) {
+                        bits -= 5;
+                        out += alphabet[(value >> bits) & 0x1f];
+                    }
+                }
+                if (bits > 0) out += alphabet[(value << (5 - bits)) & 0x1f];
+                return out;
+            }
+            function base64ToBytes(s) {
+                return Uint8Array.from(atob(s.replace(/\s/g, "")), (c) =>
+                    c.charCodeAt(0),
+                );
+            }
+            function bytesToBase64(bytes) {
+                return btoa(String.fromCharCode(...bytes));
+            }
+
+            function decodeSeed(s, encoding) {
+                if (!s.trim()) throw new Error("Please enter a secret key.");
+                return encoding === "hex"
+                    ? hexToBytes(s)
+                    : encoding === "base32"
+                      ? base32ToBytes(s)
+                      : base64ToBytes(s);
+            }
+
+            // ─── UI State & Persistence ────────────────────────────────────────────────
+            function generateSeed() {
+                // Crescendo uses 25-byte (50 hex char) seeds natively
+                const bytes = new Uint8Array(25);
+                crypto.getRandomValues(bytes);
+                let encoded =
+                    currentEncoding === "hex"
+                        ? bytesToHex(bytes)
+                        : currentEncoding === "base32"
+                          ? bytesToBase32(bytes)
+                          : bytesToBase64(bytes);
+                document.getElementById("seedInput").value = encoded;
+                saveSeed();
+            }
+
+            function saveSeed() {
+                localStorage.setItem(
+                    "hotp_seed",
+                    document.getElementById("seedInput").value,
+                );
+            }
+            function loadSeed() {
+                const saved = localStorage.getItem("hotp_seed");
+                if (saved) document.getElementById("seedInput").value = saved;
+            }
+            function copySeed(btn) {
+                const val = document.getElementById("seedInput").value;
+                if (!val) return;
+                navigator.clipboard.writeText(val).then(() => {
+                    btn.textContent = "Copied!";
+                    setTimeout(() => (btn.textContent = "Copy"), 2000);
+                });
+            }
+
+            function setEncoding(enc) {
+                currentEncoding = enc;
+                document.getElementById("encodingHelp").innerHTML =
+                    helpTexts[enc];
+            }
+
+            function setMode(mode) {
+                currentMode = mode;
+                document
+                    .querySelectorAll(".tab")
+                    .forEach((t) =>
+                        t.classList.toggle("active", t.dataset.mode === mode),
+                    );
+                document
+                    .querySelectorAll(".mode-config")
+                    .forEach((c) =>
+                        c.classList.toggle("active", c.id === `config-${mode}`),
+                    );
+
+                const titles = {
+                    verify: "Verify Single Code",
+                    generate: "Generate Forward",
+                    resync: "Resync to CSV",
+                };
+                document.getElementById("toolTitle").textContent = titles[mode];
+                document
+                    .getElementById("resultsWrapper")
+                    .classList.remove("active");
+                document
+                    .getElementById("driftVisualizer")
+                    .classList.remove("active");
+            }
+
+            // ─── HOTP core (RFC 4226) ──────────────────────────────────────────────────
+            async function computeHOTP(seedBytes, counter, digits, algo) {
+                const bytes = new Uint8Array(8);
+                let c = BigInt(counter);
+                for (let i = 7; i >= 0; i--) {
+                    bytes[i] = Number(c & 0xffn);
+                    c >>= 8n;
+                }
+
+                const key = await crypto.subtle.importKey(
+                    "raw",
+                    seedBytes,
+                    { name: "HMAC", hash: algo },
+                    false,
+                    ["sign"],
+                );
+                const sig = new Uint8Array(
+                    await crypto.subtle.sign("HMAC", key, bytes),
+                );
+                const offset = sig[sig.length - 1] & 0x0f;
+                const code =
+                    ((sig[offset] & 0x7f) << 24) |
+                    ((sig[offset + 1] & 0xff) << 16) |
+                    ((sig[offset + 2] & 0xff) << 8) |
+                    (sig[offset + 3] & 0xff);
+                return String(code % Math.pow(10, digits)).padStart(
+                    digits,
+                    "0",
+                );
+            }
+
+            // ─── Tool Execution Wrappers ───────────────────────────────────────────────
+            function setupRun() {
+                document.getElementById("statusBanner").className =
+                    "status-banner";
+                document.getElementById("dataBody").innerHTML = "";
+                document.getElementById("dataHead").innerHTML = "";
+                document
+                    .getElementById("resultsWrapper")
+                    .classList.add("active");
+                document
+                    .getElementById("driftVisualizer")
+                    .classList.remove("active");
+
+                const seedInputVal = document
+                    .getElementById("seedInput")
+                    .value.trim();
+                const algo = document.getElementById("algoSelect").value;
+                const digits = parseInt(
+                    document.getElementById("digitsSelect").value,
+                );
+
+                document.getElementById("ctxSeed").textContent =
+                    seedInputVal || "None";
+                document.getElementById("ctxAlgo").textContent = algo;
+                document.getElementById("ctxDigits").textContent = digits;
+
+                return {
+                    seedBytes: decodeSeed(seedInputVal, currentEncoding),
+                    algo,
+                    digits,
+                    seedInputVal,
+                };
+            }
+
+            function showBanner(msg, isSuccess) {
+                const banner = document.getElementById("statusBanner");
+                banner.textContent = msg;
+                banner.className = `status-banner ${isSuccess ? "success" : "error"}`;
+            }
+
+            async function runGenerate() {
+                try {
+                    const { seedBytes, algo, digits } = setupRun();
+                    const start =
+                        parseInt(document.getElementById("genCounter").value) ||
+                        0;
+                    const count = parseInt(
+                        document.getElementById("genCount").value,
+                    );
+
+                    document.getElementById("dataHead").innerHTML =
+                        `<tr><th>Counter</th><th>Expected Code</th><th>Token Tap (Verify)</th></tr>`;
+                    const tbody = document.getElementById("dataBody");
+
+                    for (let i = 0; i < count; i++) {
+                        const c = start + i;
+                        const expected = await computeHOTP(
+                            seedBytes,
+                            c,
+                            digits,
+                            algo,
+                        );
+                        tbody.innerHTML += `<tr><td>${c}</td><td>${expected}</td><td><input class="table-tap-input" type="text" maxlength="${digits}" oninput="this.closest('tr').classList.toggle('match', this.value.trim() === '${expected}')"></td></tr>`;
+                    }
+                } catch (e) {
+                    showBanner(e.message, false);
+                }
+            }
+
+            async function runVerify() {
+                try {
+                    const { seedBytes, algo, digits } = setupRun();
+                    const code = document
+                        .getElementById("verifyCode")
+                        .value.trim();
+                    const baseCounter =
+                        parseInt(
+                            document.getElementById("verifyCounter").value,
+                        ) || 0;
+                    const window = parseInt(
+                        document.getElementById("lookaheadSelect").value,
+                    );
+
+                    if (!code) throw new Error("Enter token code to verify.");
+
+                    document.getElementById("dataHead").innerHTML =
+                        `<tr><th>Counter</th><th>Computed Code</th><th>Match</th></tr>`;
+                    const tbody = document.getElementById("dataBody");
+                    let matchedAt = null;
+
+                    for (let i = 0; i <= window; i++) {
+                        const c = baseCounter + i;
+                        const expected = await computeHOTP(
+                            seedBytes,
+                            c,
+                            digits,
+                            algo,
+                        );
+                        const isMatch = expected === code;
+                        if (isMatch && matchedAt === null) matchedAt = c;
+                        tbody.innerHTML += `<tr class="${isMatch ? "match" : ""}"><td>${c}</td><td>${expected}</td><td>${isMatch ? "✓ MATCH" : "—"}</td></tr>`;
+                    }
+
+                    if (matchedAt !== null) {
+                        showBanner(
+                            `✓ Match found at counter ${matchedAt} (Drift: +${matchedAt - baseCounter})`,
+                            true,
+                        );
+
+                        // Update Visual Drift
+                        document
+                            .getElementById("driftVisualizer")
+                            .classList.add("active");
+                        document.getElementById("driftLblStart").textContent =
+                            `C:${baseCounter}`;
+                        document.getElementById("driftLblEnd").textContent =
+                            `C:${baseCounter + window}`;
+
+                        const percent =
+                            ((matchedAt - baseCounter) / window) * 100;
+                        document.getElementById("driftActual").style.left =
+                            `${percent}%`;
+                        document.getElementById("driftLblMatch").textContent =
+                            `Matched at Counter: ${matchedAt}`;
+                    } else {
+                        showBanner(
+                            `✗ No match found in the next ${window} counters.`,
+                            false,
+                        );
+                    }
+                } catch (e) {
+                    showBanner(e.message, false);
+                }
+            }
+
+            async function runResync() {
+                try {
+                    const { seedBytes, algo, digits, seedInputVal } =
+                        setupRun();
+                    const serial =
+                        document.getElementById("resyncSerial").value.trim() ||
+                        "UNKNOWN_TOKEN";
+                    const t1 = document
+                        .getElementById("resyncCode1")
+                        .value.trim();
+                    const t2 = document
+                        .getElementById("resyncCode2")
+                        .value.trim();
+                    const t3 = document
+                        .getElementById("resyncCode3")
+                        .value.trim();
+                    const start =
+                        parseInt(
+                            document.getElementById("resyncCounter").value,
+                        ) || 0;
+                    const max = parseInt(
+                        document.getElementById("resyncLookahead").value,
+                    );
+
+                    if (!t1 || !t2 || !t3)
+                        throw new Error(
+                            "All 3 tap codes are required for a safe resynchronization.",
+                        );
+
+                    let matchedStart = null;
+
+                    for (let c = start; c <= start + max; c++) {
+                        if (
+                            (await computeHOTP(seedBytes, c, digits, algo)) ===
+                            t1
+                        ) {
+                            if (
+                                (await computeHOTP(
+                                    seedBytes,
+                                    c + 1,
+                                    digits,
+                                    algo,
+                                )) === t2
+                            ) {
+                                if (
+                                    (await computeHOTP(
+                                        seedBytes,
+                                        c + 2,
+                                        digits,
+                                        algo,
+                                    )) === t3
+                                ) {
+                                    matchedStart = c;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+
+                    if (matchedStart !== null) {
+                        const nextValidCounter = matchedStart + 3;
+                        showBanner(
+                            `✓ Sequence located! Token is currently at counter ${nextValidCounter}. Generating CSV...`,
+                            true,
+                        );
+
+                        // Ping ID Strict CSV format: Serial, SecretHex, Counter
+                        const secretHex =
+                            currentEncoding === "hex"
+                                ? seedInputVal
+                                : bytesToHex(seedBytes);
+                        const csvContent = `${serial},${secretHex},${nextValidCounter}`;
+
+                        const blob = new Blob([csvContent], {
+                            type: "text/csv",
+                        });
+                        const url = window.URL.createObjectURL(blob);
+                        const a = document.createElement("a");
+                        a.href = url;
+                        a.download = `resync_${serial}_c${nextValidCounter}.csv`;
+                        document.body.appendChild(a);
+                        a.click();
+                        document.body.removeChild(a);
+                        window.URL.revokeObjectURL(url);
+                    } else {
+                        showBanner(
+                            `✗ Sequence not found within max depth of ${max}.`,
+                            false,
+                        );
+                    }
+                } catch (e) {
+                    showBanner(e.message, false);
+                }
+            }
+
+            // ─── Init ──────────────────────────────────────────────────────────────────
+            document.addEventListener("DOMContentLoaded", () => {
+                if (!localStorage.getItem("hotp_seed")) {
+                    // Default to a 25-byte seed example to match Crescendo behavior
+                    document.getElementById("seedInput").value =
+                        "75d7bc863a58b68e6a2a0a876aeaeedf8116b6e217e40f6f0a";
+                } else {
+                    loadSeed();
+                }
+                setEncoding("hex"); // Initialize tooltip
+            });
+        </script>
+    </body>
+</html>
